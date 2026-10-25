@@ -1,0 +1,44 @@
+# CodeQL（GitHub の静的解析）で、mod のコードとワークフロー自体の危ない書き方を探す。
+# 結果はリポジトリの Security タブ → Code scanning に出る。
+# 使う action はタグではなくコミットの SHA で固定している（タグを付け替えられても中身が変わらないように）。
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1" # 毎週月曜 12:17（日本時間）。コードが変わらなくても、新しいルールで見直す
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # 結果を Code scanning に送る
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # javascript-typescript = mod/ の本体、actions = .github/workflows/ のワークフロー
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended # 標準より多めのセキュリティのルール
+
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: "/language:${{ matrix.language }}"
