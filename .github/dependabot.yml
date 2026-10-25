@@ -1,0 +1,17 @@
+# Dependabot: ワークフローで SHA 固定している action に新しい版が出たら、更新の PR を作る。
+# PR は公開リポジトリに来る。取り込んだら、同じ変更を開発用リポジトリの .github/ にも入れる
+# （mod/scripts/sync_public.py は、公開側の .github/ が開発用と違うと止まる）。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    groups:
+      actions:
+        patterns: ["*"] # 1 週間ぶんを 1 つの PR にまとめる
+    commit-message:
+      prefix: "ci"
