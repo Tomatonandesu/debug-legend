@@ -27,7 +27,7 @@ import { buy, greet, refresh, sellItem, takeAmulet, takeLuckyBag, USES, useItem 
 import { applyGoldTrim, combine as combineSmithGear, craftBossGear, craftSet, disassemble as disassembleSmithGear, enhance as enhanceSmithGear, equipStashed, inheritPlus, reforge as reforgeSmithGear, sellStashed, weeklyGuardGift } from './smith'
 import type { EnhanceResult } from './smith'
 import { GEAR, LAMP } from './config'
-import { combatPower, pullLamp, resolvePending } from './gear'
+import { combatPower, pullLamp, RARITY_COUNT, resolvePending, summarizeLampDrops } from './gear'
 import type { $ } from './persist'
 import { background, load, mutate } from './persist'
 import type { BlackMarketItemId } from './premium'
@@ -95,7 +95,7 @@ export async function pressLamp($: $, count = 1): Promise<Drop[]> {
     drops = pulled
     if (pulled.length === 0) return current
     // 開けた宝箱の数を数える（日課・週課・実績）
-    return syncCodex(withDropShare(countUp(next, 'chests', pulled.length, day), pulled, now))
+    return syncCodex(withDropShare(countUp(summarizeLampDrops(next, pulled), 'chests', pulled.length, day), pulled, now))
   })
   if (save !== undefined && drops.length > 0) {
     logPsychicProcs(before, save)
@@ -107,12 +107,24 @@ export async function pressLamp($: $, count = 1): Promise<Drop[]> {
 }
 
 /** 手動確認待ちの装備を決める */
-export async function decide($: $, choice: 'equip' | 'sell'): Promise<void> {
-  await mutate($, (save, now) => resolvePending(save, choice, now)?.save ?? save)
+export async function decide($: $, choice: 'equip' | 'stash' | 'sell', expectedId?: number): Promise<void> {
+  const id = expectedId ?? (await load($))?.pending?.id
+  if (id === undefined) return
+  await mutate($, (save, now) => resolvePending(save, choice, now, id)?.save ?? save)
 }
 
 export type Toggle = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings]
 export type Volume = 'bgmVolume' | 'seVolume'
+
+/** 自動判断のやり方とレア度の区切りを次の値へ進める */
+export function nextGearSetting(settings: Settings, key: 'judgeMode' | 'manualFrom' | 'stashFrom'): Settings {
+  if (key === 'judgeMode') return { ...settings, judgeMode: settings.judgeMode === 'equip' ? 'sell' : 'equip' }
+  return { ...settings, [key]: settings[key] + 1 >= RARITY_COUNT ? -1 : settings[key] + 1 }
+}
+
+export async function cycleGearSetting($: $, key: 'judgeMode' | 'manualFrom' | 'stashFrom'): Promise<void> {
+  await mutate($, save => ({ ...save, settings: nextGearSetting(save.settings, key) }))
+}
 
 export async function toggleSetting($: $, key: Toggle): Promise<void> {
   await mutate($, save => ({ ...save, settings: { ...save.settings, [key]: !save.settings[key] } }))

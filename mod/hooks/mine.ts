@@ -1,7 +1,7 @@
 import type { MineBossFight, MineCell, MineFloorRecord, MineHaul, MineState, SaveData } from '../types'
 import { bossHp, enemyHp, expPerKill, heroStats } from './battle'
 import { READY, addItem, grant, isUnlocked, priceUnit } from './calendar'
-import { applyGoldenHand, random, judge, rollItem, setCount } from './gear'
+import { applyGoldenHand, random, judge, rollItem, setCount, stashWhilePending } from './gear'
 import { addExp } from './level'
 import { petBattleEffects } from './pets'
 import { hasPsychicNode, psychicGoldReward, psychicStarReward } from './psychic'
@@ -543,8 +543,8 @@ function rollPrize(save: SaveData, index: number): { prize: MineHaul | null; fla
   } else if (cell.kind === 'chest') {
     prize.lamps = 1 + Math.floor(r('a') * 3)
     prize.gold = psychicGoldReward(save, Math.round(priceUnit(save) * (0.1 + r('b') * 0.3)))
-    // まれに装備（確認待ちの装備があるときは出さない。もらうときにもう一度見る）
-    if (r('c') < 0.04 && save.pending === null) {
+    // まれに装備（確認待ちでも出し、受け取るときに倉庫へ送る）
+    if (r('c') < 0.04) {
       prize.flags.push('gear')
     }
   } else if (cell.kind === 'monster') {
@@ -596,12 +596,10 @@ function applyPrize(input: SaveData, index: number, prize: MineHaul, now: number
   }
   for (const flag of prize.flags) {
     if (flag === 'gear') {
-      if (save.pending === null) {
-        const rolled = rollItem(save)
-        const golden = applyGoldenHand(rolled.save, rolled.item)
-        save = judge(golden.save, golden.item, now).save
-        dig.haul.flags.push('gear')
-      }
+      const rolled = rollItem(save)
+      const golden = applyGoldenHand(rolled.save, rolled.item)
+      save = (save.pending === null ? judge : stashWhilePending)(golden.save, golden.item, now).save
+      dig.haul.flags.push('gear')
     } else if (flag === 'fossil') {
       const unseen = Array.from({ length: FOSSIL_COUNT }, (_, k) => k + 1).filter(k => !save.mine.fossils.includes(k))
       const found = unseen[Math.floor(r('a') * unseen.length)]

@@ -77,21 +77,27 @@ export type Item = {
 /** ランプを叩いた結果 */
 export type Drop = {
   item: Item
-  /** equipped: 装備した / sold: 売った / pending: 手動で確認待ち */
-  action: 'equipped' | 'sold' | 'pending' | 'stashed'
+  /** soldFull / equippedSoldFull: 倉庫がいっぱいなので売った（後者は外した装備） */
+  action: 'equipped' | 'sold' | 'pending' | 'stashed' | 'soldFull' | 'equippedSoldFull'
   /** 売ったときのゴールド（装備したときは外した装備を売った額） */
   gold: number
   at: number
+  /** まとめて開けた宝箱で倉庫がいっぱいのため売った装備の数 */
+  stashFullSales?: number
 }
 
 /** 画面の言語。auto は Claude Code の言語設定に合わせる（取れなければ日本語） */
 export type Language = 'auto' | 'ja' | 'en'
 
 export type Settings = {
-  /** 強ければ装備・弱ければ売却を自動で決める */
-  autoJudge: boolean
-  /** レア以上は自動で決めず、手動で確認する */
-  manualRareUp: boolean
+  /** 強ければ付ける / 全部売る */
+  judgeMode: 'equip' | 'sell'
+  /** 手動で確認するレア度の下限（-1 はしない、0〜5） */
+  manualFrom: number
+  /** 倉庫に入れるレア度の下限（-1 は入れない、0〜5） */
+  stashFrom: number
+  /** 強ければ付けるときに呪いの部位を手動で確認する */
+  curseManual: boolean
   /** ランプを自動で叩く */
   autoLamp: boolean
   /** エピック以上のドロップをトーストで知らせる */
@@ -113,8 +119,6 @@ export type Settings = {
   debugLog: boolean
   /** 新しい施設が開いた日に 1 回だけお知らせする */
   notifyUnlock: boolean
-  /** 自動判断で売るレア以上の装備を鍛冶屋の倉庫に取っておく */
-  keepForSmith: boolean
 }
 
 /** 毎日の冒険（docs/DAILY.md）で、遊んだ日数で開く施設 */
@@ -501,7 +505,7 @@ export type BusyMark = {
 
 /** $.store に保存するセーブデータ（版 19） */
 export type SaveData = {
-  version: 27
+  version: 28
   createdAt: number
   /** 最後に時間の進行を計算した時刻 */
   lastTickAt: number

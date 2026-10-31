@@ -7,6 +7,8 @@ import { GOLDEN_HAND_SECONDS, hasPsychicNode, psychicGoldRate, recordPsychicProc
 // 装備とランプの計算。fuel.ts と同じく $ を使わない（同じセーブなら同じ結果）。
 
 export const SLOTS: readonly SlotId[] = ['weapon', 'head', 'body', 'arms', 'legs', 'charm']
+/** 装備倉庫の上限（鍛冶屋でも同じ値を使う） */
+export const STASH_CAP = 60
 
 /** レア度の数（コモン〜ミシック） */
 export const RARITY_COUNT = GEAR.rarityWeights.length
@@ -137,18 +139,21 @@ export function applyGoldenHand(save: SaveData, item: Item): { save: SaveData; i
 
 /** 自動判断で決めずに手動確認に回すか */
 export function needsManualCheck(save: SaveData, item: Item): boolean {
-  return item.curse === true || save.equipment[item.slot]?.curse === true || !save.settings.autoJudge || (save.settings.manualRareUp && item.rarity >= GEAR.manualFrom)
+  return item.curse === true
+    || (save.settings.judgeMode === 'equip' && save.settings.curseManual && save.equipment[item.slot]?.curse === true)
+    || (save.settings.manualFrom >= 0 && item.rarity >= save.settings.manualFrom)
 }
 
-/** 装備する（外した装備は売る） */
+/** 装備する（外した装備は倉庫の設定で決める） */
 export function equip(save: SaveData, item: Item, now: number): { save: SaveData; drop: Drop } {
   const old = save.equipment[item.slot]
-  const keepOld = old !== null && save.settings.keepForSmith && old.rarity >= 2 && save.stash.length < 60
-  const gold = old === null || keepOld ? 0 : sellValue(old, save)
-  const drop: Drop = { item, action: 'equipped', gold, at: now }
+  const disposed = old === null ? undefined : stashOrSell(save, old, now)
+  const next = disposed?.save ?? save
+  const gold = disposed?.drop.gold ?? 0
+  const drop: Drop = { item, action: disposed?.drop.action === 'soldFull' ? 'equippedSoldFull' : 'equipped', gold, at: now }
 
   return {
-    save: { ...save, equipment: { ...save.equipment, [item.slot]: item }, stash: keepOld && old !== null ? [...save.stash, old] : save.stash, gold: save.gold + gold, pending: null, lastDrop: drop },
+    save: { ...next, equipment: { ...next.equipment, [item.slot]: item }, pending: null, lastDrop: drop },
     drop,
   }
 }
@@ -167,12 +172,15 @@ export function isUpgrade(save: SaveData, item: Item): boolean {
 }
 
 function stashOrSell(save: SaveData, item: Item, now: number): { save: SaveData; drop: Drop } {
-  if (save.settings.keepForSmith && item.rarity >= 2 && save.stash.length < 60) {
+  if (save.settings.stashFrom < 0 || item.rarity < save.settings.stashFrom) return sell(save, item, now)
+  if (save.stash.length < STASH_CAP) {
     const drop: Drop = { item, action: 'stashed', gold: 0, at: now }
     return { save: { ...save, stash: [...save.stash, item], pending: null, lastDrop: drop }, drop }
   }
 
-  return sell(save, item, now)
+  const sold = sell(save, item, now)
+  const drop: Drop = { ...sold.drop, action: 'soldFull' }
+  return { save: { ...sold.save, lastDrop: drop }, drop }
 }
 
 /**
@@ -228,15 +236,48 @@ export function judge(input: SaveData, item: Item, now: number): { save: SaveDat
     return { save: { ...save, pending: item, lastDrop: drop }, drop }
   }
 
-  return isUpgrade(save, item) ? equip(save, item, now) : stashOrSell(save, item, now)
+  return save.settings.judgeMode === 'equip' && isUpgrade(save, item) ? equip(save, item, now) : stashOrSell(save, item, now)
 }
 
-/** 手動確認待ちの装備を、装備するか売るか決める */
-export function resolvePending(save: SaveData, choice: 'equip' | 'sell', now: number): { save: SaveData; drop: Drop } | undefined {
+/** 確認待ちの間に出た装備は判断せず倉庫へ。満杯なら売り、確認待ちは保つ */
+export function stashWhilePending(input: SaveData, item: Item, now: number): { save: SaveData; drop: Drop } {
+  const key = codexGearKey(item)
+  const keys = item.hard === true ? [key, `hard:${key}`] : [key]
+  const full = input.stash.length >= STASH_CAP
+  const gold = full ? sellValue(item, input) : 0
+  const drop: Drop = { item, action: full ? 'soldFull' : 'stashed', gold, at: now }
+
+  return {
+    save: {
+      ...input,
+      stash: full ? input.stash : [...input.stash, item],
+      gold: input.gold + gold,
+      totals: { ...input.totals, drops: input.totals.drops + 1 },
+      codex: keys.every(id => input.codex.seen.includes(id)) ? input.codex : { ...input.codex, seen: [...new Set([...input.codex.seen, ...keys])] },
+      lastDrop: drop,
+    },
+    drop,
+  }
+}
+
+/** 手動確認待ちの装備を、付ける・倉庫へ・売るから決める */
+export function resolvePending(save: SaveData, choice: 'equip' | 'stash' | 'sell', now: number, expectedId?: number): { save: SaveData; drop: Drop } | undefined {
   const item = save.pending
-  if (item === null) {
+  if (item === null || (expectedId !== undefined && item.id !== expectedId)) {
     return undefined
   }
 
-  return choice === 'equip' ? equip(save, item, now) : stashOrSell(save, item, now)
+  if (choice === 'stash') {
+    if (save.stash.length >= STASH_CAP) return undefined
+    const drop: Drop = { item, action: 'stashed', gold: 0, at: now }
+    return { save: { ...save, stash: [...save.stash, item], pending: null, lastDrop: drop }, drop }
+  }
+  return choice === 'equip' ? equip(save, item, now) : sell(save, item, now)
+}
+
+/** まとめて開けた途中の倉庫満杯による売却も、最後の表示に残す */
+export function summarizeLampDrops(save: SaveData, drops: readonly Drop[]): SaveData {
+  const stashFullSales = drops.filter(drop => drop.action === 'soldFull' || drop.action === 'equippedSoldFull').length
+  if (drops.length < 2 || stashFullSales === 0 || save.lastDrop === null) return save
+  return { ...save, lastDrop: { ...save.lastDrop, stashFullSales } }
 }

@@ -1,10 +1,10 @@
 import type { Item, SaveData, SlotId } from '../types'
 import { addItem, priceUnit } from './calendar'
-import { effectiveItemPower, itemPower, random, sellValue, SET_IDS, BOSS_GEAR_IDS } from './gear'
+import { effectiveItemPower, itemPower, random, sellValue, SET_IDS, BOSS_GEAR_IDS, STASH_CAP } from './gear'
+export { STASH_CAP } from './gear'
 
 // 鍛冶屋の計算。画面や $ に依存せず、乱数もセーブの rng から進める。
 
-export const STASH_CAP = 60
 /** 金の装飾に使う金鉱の数 */
 export const GOLD_TRIM_ORE = 30
 export const SMITH_SETS = [

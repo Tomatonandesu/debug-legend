@@ -3,14 +3,14 @@ import type { RenderElement, RenderInput } from 'claude-code'
 
 import type { JobId, SaveData, SlotId, Tab } from '../types'
 import type { Toggle, Volume } from './actions'
-import { challenge, changeVolume, chooseJob, cycleLanguage, decide, dismissAway, dismissShare, evolveHero, greetShop, openPane, pressLamp, summaryLines, toggleSetting, visitMine, visitNightMarket } from './actions'
+import { challenge, changeVolume, chooseJob, cycleGearSetting, cycleLanguage, decide, dismissAway, dismissShare, evolveHero, greetShop, openPane, pressLamp, summaryLines, toggleSetting, visitMine, visitNightMarket } from './actions'
 import { syncBgm } from './audio'
 import { intentUrl, momentText, statusText } from './share'
 import { auraFor, curseDescription, enemyFigure, enemyFigureById, heroFigure, heroTitle, itemColor, itemName, plusColor, rarityName } from './art'
 import { attackSeconds, bossHpLeft, canEvolve, heroHpNow, hitDamage, hpTimeline, isFarming, isJobUnlocked, jobCooldownLeft, killRate, nextEvolutionLevel, retryIn, stageProgress, travelLeft, travelSeconds } from './battle'
 import { BALANCE, EVOLUTION, JOB_CHANGE, TIME } from './config'
 import { expToNext } from './fuel'
-import { SLOTS, combatPower, effectiveItemPower } from './gear'
+import { SLOTS, STASH_CAP, combatPower, effectiveItemPower } from './gear'
 import type { $ } from './persist'
 import { background, today } from './persist'
 import { SCENE, bandSvg, battleScene, chestSvg, dropSvg, slotSvg } from './scene'
@@ -286,20 +286,25 @@ export async function drawPane($: $, e: RenderInput<'Pane'>) {
   )
 }
 
-/** ランプのボタンと、確認待ちの「装備する / 売る」 */
+/** ランプのボタンと、確認待ちの「付ける / 倉庫へ / 売る」 */
 function lampControls($: $, els: Els, save: SaveData) {
   const { Box, Button, Text } = els
   const pending = save.pending
   if (pending !== null) {
-    const diff = pending.power - (save.equipment[pending.slot]?.power ?? 0)
+    const current = save.equipment[pending.slot]
+    const power = effectiveItemPower(pending)
+    const diff = Math.round(power - (current === null ? 0 : effectiveItemPower(current)))
     return (
       <Box flexDirection="column" alignItems="center">
-        <Text color={itemColor(pending)}>{T.pendingLine(`${rarityName(pending.rarity)} ${itemName(pending)}`, pending.power, diff)}</Text>
+        <Text color={itemColor(pending)}>{T.pendingLine(`${rarityName(pending.rarity)} ${itemName(pending)}`, Math.round(power), diff)}</Text>
         {pending.curse === true ? <Text color={itemColor(pending)}>{curseDescription()}</Text> : <Box />}
+        {pending.curse !== true && save.settings.judgeMode === 'equip' && save.settings.curseManual && save.equipment[pending.slot]?.curse === true ? <Text>{T.curseSlotManual}</Text> : <Box />}
         <Box flexDirection="row" gap={1}>
-          <Button key="equip" label={T.equipNow} hotkey="e" variant="primary" onPress={() => decide($, 'equip')} />
-          <Button key="sell" label={T.sellNow} hotkey="s" onPress={() => decide($, 'sell')} />
+          <Button key="equip" label={T.equipNow} hotkey="e" variant="primary" onPress={() => decide($, 'equip', pending.id)} />
+          <Button key="stash" label={T.stashNow} hotkey="w" dimColor={save.stash.length >= STASH_CAP} onPress={() => decide($, 'stash', pending.id)} />
+          <Button key="sell" label={T.sellNow} hotkey="s" onPress={() => decide($, 'sell', pending.id)} />
         </Box>
+        {save.stash.length >= STASH_CAP ? <Text dimColor>{T.smithStashFull}</Text> : <Box />}
       </Box>
     )
   }
@@ -320,6 +325,7 @@ function lastDropLine(els: Els, save: SaveData) {
   return (
     <Text color={itemColor(drop.item)}>
       {T.dropLine(rarityName(drop.item.rarity), itemName(drop.item), drop.item.power)} {T.dropAction[drop.action](drop.gold)}
+      {(drop.stashFullSales ?? 0) > 0 ? ` ${T.stashFullSales(drop.stashFullSales!)}` : ''}
     </Text>
   )
 }
@@ -681,7 +687,7 @@ function shareBox($: $, els: Els, save: SaveData) {
 }
 
 const TOGGLES: Record<'lamp' | 'notify' | 'sound' | 'screen', readonly Toggle[]> = {
-  lamp: ['autoLamp', 'autoJudge', 'manualRareUp', 'keepForSmith'],
+  lamp: ['autoLamp'],
   notify: ['notifyEpic', 'notifyBoss', 'notifyUnlock'],
   sound: ['isMuted', 'windowsSound'],
   screen: ['isBandFolded', 'debugLog'],
@@ -709,7 +715,12 @@ function settingsTab($: $, els: Els, save: SaveData) {
 
   return (
     <Box flexDirection="column" gap={1}>
-      {group('lamp')}
+      {group('lamp', <Box flexDirection="column">
+        <Button key="set-judgeMode" label={T.setting.judgeMode(save.settings.judgeMode)} onPress={() => cycleGearSetting($, 'judgeMode')} />
+        <Button key="set-manualFrom" label={T.setting.manualFrom(save.settings.manualFrom)} onPress={() => cycleGearSetting($, 'manualFrom')} />
+        <Button key="set-stashFrom" label={T.setting.stashFrom(save.settings.stashFrom)} onPress={() => cycleGearSetting($, 'stashFrom')} />
+        {toggle('curseManual')}
+      </Box>)}
       {group('notify')}
       {group(
         'sound',

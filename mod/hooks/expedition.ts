@@ -2,7 +2,7 @@ import type { Adventurer, AdventurerId, Drop, ExpeditionLunch, ExpeditionTrip, S
 import { addItem, isUnlocked, priceUnit, READY } from './calendar'
 import { buffRate } from './buffs'
 import { growable, isFarmOpen, cropItemId } from './farm'
-import { combatPower, judge, random } from './gear'
+import { combatPower, judge, random, stashWhilePending } from './gear'
 import { gainPetExp, petExpeditionBonus, isPetAway } from './pets'
 import { bossHp, stageIndex } from './battle'
 import { rollAtRarity } from './shop'
@@ -169,9 +169,9 @@ export function claimTrip(save: SaveData, id: AdventurerId, now: number): Expedi
     const rarity = outcome === 'great' ? 3 + Math.floor(draw() * 3) : 1 + Math.floor(draw() * 2)
     add(`collar-${kind}-r${rarity}`, 1)
   }
-  if (next.pending === null && draw() < (outcome === 'great' ? 0.2 : 0.01 * trip.hours) * fortune) {
+  if (draw() < (outcome === 'great' ? 0.2 : 0.01 * trip.hours) * fortune) {
     const rolled = rollAtRarity(next, outcome === 'great' ? 3 : 2)
-    const judged = judge(rolled.save, rolled.item, now)
+    const judged = (next.pending === null ? judge : stashWhilePending)(rolled.save, rolled.item, now)
     next = judged.save
     drop = judged.drop
   }

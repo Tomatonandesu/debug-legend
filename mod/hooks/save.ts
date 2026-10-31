@@ -23,7 +23,7 @@ import { ADVANCED_JOBS, BOSS_STAGE, CHAPTER_COUNT, JOB_IDS, MAX_GROUP } from './
 // 形を変えるときは SAVE_VERSION を上げ、MIGRATIONS に「前の版 → 次の版」の変換を足す。
 
 export const SAVE_KEY = 'save'
-export const SAVE_VERSION = 27
+export const SAVE_VERSION = 28
 export const EXPORT_TAG = 'debug-legend-save'
 /** 書いた変更の印をいくつまで残すか */
 export const APPLIED_LIMIT = 64
@@ -60,8 +60,10 @@ export class SaveFormatError extends Error {}
 
 /** 設定の初期値（BGM・効果音ともオン、通知はエピック以上とボス撃破） */
 export const DEFAULT_SETTINGS: Settings = {
-  autoJudge: true,
-  manualRareUp: false,
+  judgeMode: 'equip',
+  manualFrom: -1,
+  stashFrom: -1,
+  curseManual: true,
   autoLamp: false,
   notifyEpic: true,
   notifyBoss: true,
@@ -73,7 +75,6 @@ export const DEFAULT_SETTINGS: Settings = {
   language: 'auto',
   debugLog: true,
   notifyUnlock: true,
-  keepForSmith: false,
 }
 
 const emptyEquipment = (): Record<SlotId, Item | null> => ({ weapon: null, head: null, body: null, arms: null, legs: null, charm: null })
@@ -274,6 +275,14 @@ const MIGRATIONS: Record<number, (old: Raw, now: number) => Raw> = {
       isObject(mission) && mission.id === 'stairs' && mission.claimed !== true ? { ...mission, goal: 5 } : mission) : missions.weekly
     return { ...old, version: 27, settledTickAt: timestamp(old.lastTickAt, now), missions: { ...missions, weekly } }
   },
+  // 版 28: 自動判断と倉庫の区切りをレア度ごとに選ぶ。
+  27: old => {
+    const settings = isObject(old.settings) ? old.settings : {}
+    const { autoJudge, manualRareUp, keepForSmith, ...rest } = settings
+    return { ...old, version: 28, settings: { ...rest, judgeMode: 'equip', curseManual: true,
+      manualFrom: autoJudge === false ? 0 : manualRareUp === true ? 2 : -1,
+      stashFrom: keepForSmith === true ? 2 : -1 } }
+  },
 }
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === 'boolean' ? value : fallback)
@@ -364,8 +373,10 @@ function normalize(raw: Raw, now: number): SaveData {
     rng: int(raw.rng, base.rng, 0, 0xffffffff),
     nextItemId: int(raw.nextItemId, 1, 1),
     settings: {
-      autoJudge: flag(settings.autoJudge, base.settings.autoJudge),
-      manualRareUp: flag(settings.manualRareUp, base.settings.manualRareUp),
+      judgeMode: settings.judgeMode === 'sell' ? 'sell' : base.settings.judgeMode,
+      manualFrom: typeof settings.manualFrom === 'number' && Number.isInteger(settings.manualFrom) && settings.manualFrom >= -1 && settings.manualFrom < RARITY_COUNT ? settings.manualFrom : base.settings.manualFrom,
+      stashFrom: typeof settings.stashFrom === 'number' && Number.isInteger(settings.stashFrom) && settings.stashFrom >= -1 && settings.stashFrom < RARITY_COUNT ? settings.stashFrom : base.settings.stashFrom,
+      curseManual: flag(settings.curseManual, base.settings.curseManual),
       autoLamp: flag(settings.autoLamp, base.settings.autoLamp),
       notifyEpic: flag(settings.notifyEpic, base.settings.notifyEpic),
       notifyBoss: flag(settings.notifyBoss, base.settings.notifyBoss),
@@ -377,7 +388,6 @@ function normalize(raw: Raw, now: number): SaveData {
       language: settings.language === 'ja' || settings.language === 'en' ? settings.language : 'auto',
       debugLog: flag(settings.debugLog, base.settings.debugLog),
       notifyUnlock: flag(settings.notifyUnlock, base.settings.notifyUnlock),
-      keepForSmith: flag(settings.keepForSmith, base.settings.keepForSmith),
     },
     job: JOB_IDS.includes(raw.job as JobId) ? (raw.job as JobId) : 'novice',
     evolution: int(raw.evolution, 0, 0, EVOLUTION.levels.length),
@@ -1178,11 +1188,12 @@ function drop(value: unknown): Drop | null {
   }
   const it = item(value.item)
   const action = value.action
-  if (it === null || (action !== 'equipped' && action !== 'sold' && action !== 'pending' && action !== 'stashed')) {
+  if (it === null || (action !== 'equipped' && action !== 'sold' && action !== 'pending' && action !== 'stashed' && action !== 'soldFull' && action !== 'equippedSoldFull')) {
     return null
   }
 
-  return { item: it, action, gold: int(value.gold, 0), at: timestamp(value.at) }
+  const stashFullSales = int(value.stashFullSales, 0)
+  return { item: it, action, gold: int(value.gold, 0), at: timestamp(value.at), ...(stashFullSales > 0 ? { stashFullSales } : {}) }
 }
 
 /**
