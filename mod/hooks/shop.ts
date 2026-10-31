@@ -1,4 +1,4 @@
-import type { BuffKind, FeatureId, Item, SaveData, ShopState } from '../types'
+import type { BuffKind, FeatureId, Item, PetSpecies, SaveData, ShopState } from '../types'
 import { addBuff } from './buffs'
 import { addItem, featureDay, isUnlocked, priceUnit, READY } from './calendar'
 import { COLLAR_KINDS, collarId, feedPet, usePremiumEgg } from './pets'
@@ -24,6 +24,7 @@ export type Use =
   | { kind: 'timeSand' }
   | { kind: 'sealedShard' }
   | { kind: 'contract' }
+  | { kind: 'ore'; ore: string; amount: number }
 
 /** 商店の品。price = 物価 P の何倍、limit = 1 日に買える数、gives = 買うと持ち物に入るもの、needs = その施設が開いていると並ぶ、minFarmLv = 農場 Lv がこれ以上で並ぶ（種） */
 export type Good = { id: string; price: number; limit: number; gives: { id: string; amount: number }; needs: FeatureId; minFarmLv?: number }
@@ -48,7 +49,10 @@ export const GOODS: readonly Good[] = [
   { id: 'ingot-iron', price: 0.8, limit: 10, gives: { id: 'ingot-iron', amount: 1 }, needs: 'smith' },
 ]
 
-/** 持ち物を使ったときの効き目（薬は戦闘の秒数で 30 分、幸運の薬は宝箱 30 回） */
+/** 延べ棒 1 本を溶かすと出る鉱石の数 */
+export const INGOT_TO_ORE = 10
+
+/** 持ち物を使ったときの効き目（薬は戦闘の秒数で 30 分、幸運の薬は宝箱 30 回、延べ棒は鉱石 10 個） */
 export const USES: Record<string, Use> = {
   'chest-ticket': { kind: 'chests' },
   'box-legend': { kind: 'box', rarity: 4 },
@@ -62,6 +66,8 @@ export const USES: Record<string, Use> = {
   'seed-pack': { kind: 'seeds' },
   treat: { kind: 'petFood' },
   'pet-meal': { kind: 'petFood' },
+  'ingot-copper': { kind: 'ore', ore: 'ore-copper', amount: INGOT_TO_ORE },
+  'ingot-iron': { kind: 'ore', ore: 'ore-iron', amount: INGOT_TO_ORE },
   ...Object.fromEntries(
     (['s', 'm', 'l'] as const).flatMap((size, i) => [
       [`potion-power-${size}`, { kind: 'buff', buff: 'power', rate: [0.15, 0.25, 0.4][i]!, seconds: 1800 }],
@@ -278,12 +284,12 @@ export function rollAtRarity(save: SaveData, rarity: number, slot?: Item['slot']
  * 持ち物を 1 つ使う。宝箱チケット = 宝箱 +1（ストックの上限まで）、薬 = バフ、伝説箱・神話箱 = 装備（自動判断か手動確認）。
  * 使えないとき（無い・宝箱がいっぱい・もっと強い薬が効いている・確認待ちの装備がある）は undefined
  */
-export function useItem(save: SaveData, id: string, now: number): SaveData | undefined {
+export function useItem(save: SaveData, id: string, now: number, species?: PetSpecies): SaveData | undefined {
   const use = USES[id]
   if (use === undefined || (save.bag[id] ?? 0) < 1) {
     return undefined
   }
-  if (use.kind === 'petEgg') return usePremiumEgg(save)
+  if (use.kind === 'petEgg') return species === undefined ? undefined : usePremiumEgg(save, species)
   if (use.kind === 'sealedShard') return useSealedFragment(save)
   if (use.kind === 'contract') {
     if (!READY.has('expedition') || !isUnlocked(save, 'expedition') || save.expedition.contract) return undefined
@@ -309,6 +315,9 @@ export function useItem(save: SaveData, id: string, now: number): SaveData | und
   }
   if (use.kind === 'petFood') {
     return feedPet(save, id as 'treat' | 'pet-meal')
+  }
+  if (use.kind === 'ore') {
+    return addItem(spent, use.ore, use.amount)
   }
   if (use.kind === 'psiBook') {
     return { ...spent, wallet: { ...spent.wallet, psi: spent.wallet.psi + 1 } }

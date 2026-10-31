@@ -123,18 +123,29 @@ export function itemName(item: Item): string {
     : T.bossGearName[item.unique] ?? T.itemName(T.itemPrefix[item.rarity] ?? '', bases[item.nameIndex % bases.length] ?? '')
   const setName = item.set === undefined ? '' : `${T.setName[item.set] ?? item.set} `
 
-  return `${setName}${baseName}${(item.plus ?? 0) > 0 ? ` +${item.plus}` : ''}${item.goldTrim ? ` ${T.goldTrimMark}` : ''}`
+  return `${item.curse === true ? `${T.cursedPrefix} ` : ''}${setName}${baseName}${(item.plus ?? 0) > 0 ? ` +${item.plus}` : ''}${item.goldTrim ? ` ${T.goldTrimMark}` : ''}${item.curse === true ? ' 💀' : ''}`
 }
 
 export const rarityName = (rarity: number): string => T.rarity[rarity] ?? ''
 
 export const rarityColor = (rarity: number): string => T.rarityColor[rarity] ?? '#ffffff'
 
+export const CURSE_COLOR = '#e05a9a'
+
+/** 表示用の倍率。gear.ts の攻撃 ×1.3、pets.ts の HP ×0.8 に合わせる（計算は変えない）。 */
+export const CURSE_EFFECT = { attack: 1.3, hp: 0.8 } as const
+
+export const curseDescription = (): string => T.curseEffect(Math.round((CURSE_EFFECT.attack - 1) * 100), Math.round((1 - CURSE_EFFECT.hp) * 100))
+
+/** 呪い装備はレア度より呪いの色を優先する。ハードの装備も名前はレア度の色。赤い光は枠とドロップの演出（scene.ts）だけで出す */
+export const itemColor = (item: Item): string => item.curse === true ? CURSE_COLOR : rarityColor(item.rarity)
+
 /** +5 / +10 / +15 の段階で、枠に使う強化色 */
 export function plusColor(item: Item): string {
+  if (item.curse === true) return itemColor(item)
   const plus = item.plus ?? 0
   if (plus >= 15) return '#ff6df0'
   if (plus >= 10) return '#ffd60a'
   if (plus >= 5) return '#dce7f2'
-  return rarityColor(item.rarity)
+  return itemColor(item)
 }

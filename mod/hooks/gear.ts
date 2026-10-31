@@ -110,14 +110,17 @@ export function rollItem(save: SaveData): { save: SaveData; item: Item } {
   const rarity = pickWeighted(GEAR.rarityWeights, draw())
   const power = itemPower(slot, save.level, rarity, draw())
   const nameIndex = Math.floor(draw() * NAME_VARIANTS)
-  const item: Item = { id: save.nextItemId, slot, rarity, level: save.level, power, nameIndex }
+  const item: Item = { id: save.nextItemId, slot, rarity, level: save.level, power, nameIndex, ...(save.hard.loop > 0 ? { hard: true } : {}) }
 
   return { save: { ...save, rng: state, nextItemId: save.nextItemId + 1 }, item }
 }
 
-/** 30 分たっていれば、次の宝箱にレア度を 1 段足す */
+/** 水晶の賢者 4 部位: 超能力の技の間隔を 10% 短縮する */
+export const psychicInterval = (save: SaveData, seconds: number): number => seconds * (setCount(save, 'crystal-sage') >= 4 ? 0.9 : 1)
+
+/** 30 分（セット効果で短縮）たっていれば、次の宝箱にレア度を 1 段足す */
 export function applyGoldenHand(save: SaveData, item: Item): { save: SaveData; item: Item; used: boolean } {
-  if (!hasPsychicNode(save, 'fortune-5') || save.battleSeconds - save.psychic.goldHandAt < GOLDEN_HAND_SECONDS) {
+  if (!hasPsychicNode(save, 'fortune-5') || save.battleSeconds - save.psychic.goldHandAt < psychicInterval(save, GOLDEN_HAND_SECONDS)) {
     return { save, item, used: false }
   }
   let next: SaveData = { ...save, psychic: { ...save.psychic, goldHandAt: save.battleSeconds } }
@@ -134,7 +137,7 @@ export function applyGoldenHand(save: SaveData, item: Item): { save: SaveData; i
 
 /** 自動判断で決めずに手動確認に回すか */
 export function needsManualCheck(save: SaveData, item: Item): boolean {
-  return !save.settings.autoJudge || (save.settings.manualRareUp && item.rarity >= GEAR.manualFrom)
+  return item.curse === true || save.equipment[item.slot]?.curse === true || !save.settings.autoJudge || (save.settings.manualRareUp && item.rarity >= GEAR.manualFrom)
 }
 
 /** 装備する（外した装備は売る） */
@@ -213,11 +216,12 @@ export function luckyRarity(save: SaveData, item: Item, rate: number): { save: S
 /** 出た装備を自動判断（装備 / 売却）するか、手動確認に回す */
 export function judge(input: SaveData, item: Item, now: number): { save: SaveData; drop: Drop } {
   const key = codexGearKey(item)
+  const keys = item.hard === true ? [key, `hard:${key}`] : [key]
   const save = {
     ...input,
     totals: { ...input.totals, drops: input.totals.drops + 1 },
     // 図鑑: 売ってしまう装備も「出たこと」は残す
-    codex: input.codex.seen.includes(key) ? input.codex : { ...input.codex, seen: [...input.codex.seen, key] },
+    codex: keys.every(id => input.codex.seen.includes(id)) ? input.codex : { ...input.codex, seen: [...new Set([...input.codex.seen, ...keys])] },
   }
   if (needsManualCheck(save, item)) {
     const drop: Drop = { item, action: 'pending', gold: 0, at: now }

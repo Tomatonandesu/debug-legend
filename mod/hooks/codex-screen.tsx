@@ -9,6 +9,7 @@ import { CHAPTERS, CHAPTER_COUNT } from './world'
 import { BOSS_IDS, CATEGORIES, DISH_IDS, ORE_IDS, READ_COUNTS, categoryCount, categoryEntries, claimable, codexRate, mobStars } from './codex'
 import { BOSS_GEAR_IDS, NAME_VARIANTS, RARITY_COUNT, SET_IDS, SLOTS, codexPowerRate } from './gear'
 import { CROPS } from './farm'
+import { PET_SPECIES } from './pets'
 import type { $ } from './persist'
 import { T } from './texts'
 import { facilityHeader, itemIcon } from './visual-parts'
@@ -88,26 +89,31 @@ async function sectionBody($: $, els: Els, save: SaveData, category: CategoryId)
       </Box>
     )
   }
-  if (category === 'gear') {
+  if (category === 'gear' || category === 'hard') {
+    const gearGot = (id: string): boolean => gotOf(category === 'hard' ? `hard:${id}` : id)
     return (
       <Box flexDirection="column">
         <Text dimColor>{T.codexGearHint}</Text>
         {SLOTS.flatMap(slot =>
           Array.from({ length: NAME_VARIANTS }, (_, name) => {
-            const marks = Array.from({ length: RARITY_COUNT }, (_, rarity) => mark(gotOf(`gear:${slot}:${name}:${rarity}`))).join(' ')
+            const marks = Array.from({ length: RARITY_COUNT }, (_, rarity) => mark(gearGot(`gear:${slot}:${name}:${rarity}`))).join(' ')
             return <Text key={`codex-gear-${slot}-${name}`}>{T.codexGearRow(T.slot[slot], T.itemBase[slot][name] ?? '', marks)}</Text>
           }),
         )}
         <Text dimColor>{T.codexSetHint}</Text>
         {SET_IDS.map(set => (
-          <Text key={`codex-set-${set}`}>{T.codexSetRow(T.setName[set] ?? set, SLOTS.map(slot => mark(gotOf(`set:${set}:${slot}`))).join(' '))}</Text>
+          <Text key={`codex-set-${set}`}>{T.codexSetRow(T.setName[set] ?? set, SLOTS.map(slot => mark(gearGot(`set:${set}:${slot}`))).join(' '))}</Text>
         ))}
         <Text dimColor>{T.codexBossGearHint}</Text>
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {BOSS_GEAR_IDS.map(id => (
-            <Text key={`codex-bossgear-${id}`}>{T.codexItem(T.bossGearName[id] ?? id, gotOf(`boss:${id}`))}</Text>
+            <Text key={`codex-bossgear-${id}`}>{T.codexItem(T.bossGearName[id] ?? id, gearGot(`boss:${id}`))}</Text>
           ))}
         </Box>
+        {category === 'hard' ? <Box flexDirection="column">
+          {BOSS_IDS.map((id, i) => <Text key={`hard-win-${i}`}>{T.codexItem(T.enemy[id] ?? id, gotOf(`hard:win:${i + 1}`))}</Text>)}
+          <Text>{T.codexItem(T.originMoth, gotOf('hard:origin-moth'))}</Text>
+        </Box> : null}
       </Box>
     )
   }
@@ -154,10 +160,10 @@ async function sectionBody($: $, els: Els, save: SaveData, category: CategoryId)
     return (
       <Box flexDirection="column">
         <Text dimColor>{T.codexPetHint}</Text>
-        {[0, 1].map(slot => {
-          const pet = save.pets.owned[slot]
+        {PET_SPECIES.map(species => {
+          const met = save.pets.owned.some(pet => pet.species === species)
           return (
-            <Text key={`codex-pet-${slot}`}>{T.codexPet(T.codexPetSlot(slot + 1, pet === undefined ? undefined : (T.petSpeciesName[pet.species] ?? pet.species)), [1, 2, 3].map(form => mark(gotOf(`pet:${slot}:${form}`))).join(' '))}</Text>
+            <Text key={`codex-pet-${species}`}>{T.codexPet(met ? (T.petSpeciesName[species] ?? species) : T.codexUnknown, [1, 2, 3].map(form => mark(gotOf(`pet:${species}:${form}`))).join(' '))}</Text>
           )
         })}
       </Box>

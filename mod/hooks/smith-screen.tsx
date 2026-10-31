@@ -10,7 +10,7 @@ import { BOSS_RECIPES, SMITH_SETS, STASH_CAP, enhanceChance, oreForPlus, smithAf
 import type { $ } from './persist'
 import { today } from './persist'
 import { T } from './texts'
-import { itemName, plusColor, rarityName } from './art'
+import { curseDescription, itemName, plusColor, rarityName } from './art'
 
 type Els = ReturnType<$['ui']['resolve']>
 
@@ -53,6 +53,7 @@ function itemCard($: $, els: Els, save: SaveData, item: Item, stashed: boolean, 
   return (
     <Box key={`smith-item-${item.id}`} flexDirection="column" borderStyle="round" borderColor={plusColor(item)} paddingX={1}>
       <Text color={plusColor(item)} bold>{T.smithItemLine(itemName(item), rarityName(item.rarity), Math.round(effectiveItemPower(item)))}</Text>
+      {item.curse === true ? <Text color={plusColor(item)}>{curseDescription()}</Text> : <Box />}
       <Box flexDirection="row" flexWrap="wrap" gap={1}>
         {plus < 15 ? (
           <Box flexDirection="row">

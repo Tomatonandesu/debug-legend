@@ -7,9 +7,10 @@ import { isNew } from './calendar'
 import { introBox } from './daily-screens'
 import { itemIcon } from './visual-parts'
 import type { $ } from './persist'
-import { blackMarketNightKey, blackMarketStock, premiumStock } from './premium'
+import { blackMarketNightKey, blackMarketStock, premiumStock, premiumWeekKey } from './premium'
 import type { BlackMarketItemId } from './premium'
 import { T } from './texts'
+import { curseDescription } from './art'
 
 type Els = ReturnType<$['ui']['resolve']>
 
@@ -24,7 +25,7 @@ function textHash(text: string): number {
 /** 街タブの上級商店。 */
 export async function premiumView($: $, els: Els, save: SaveData, day: string, now: number): Promise<RenderElement> {
   const { Box, Button, Text } = els
-  const week = save.premium.week || day
+  const week = premiumWeekKey(day)
   const slots = premiumStock(save, day, now)
   const intro = isNew(save, 'premium') ? await introBox($, els, 'premium') : undefined
   const talk = T.premiumTalk[textHash(`${save.createdAt}:${week}`) % T.premiumTalk.length] ?? ''
@@ -46,7 +47,8 @@ export async function premiumView($: $, els: Els, save: SaveData, day: string, n
               {itemIcon(els, slot.good.id, 40) ?? <Box />}
               <Box flexDirection="column">
               <Text bold>{name}{slot.isSale ? `　${T.premiumSale}` : ''}</Text>
-              <Text dimColor>{T.premiumNote[slot.good.id] ?? ''}</Text>
+              <Text dimColor>{slot.group === 'always' ? T.premiumAlways : T.premiumWeekly}</Text>
+              <Text dimColor>{slot.good.id.startsWith('decoration-') ? T.premiumDecorationNote : T.premiumNote[slot.good.id] ?? ''}</Text>
               <Text>{T.premiumLeft(slot.left)}　✦{slot.price}</Text>
               {canBuy ? <Button key={`premium-buy-${slot.good.id}`} label={T.premiumBuy(name, slot.price)} onPress={() => buyPremiumGood($, slot.good.id)} /> : <Text dimColor>{slot.left < 1 ? T.premiumSoldOut : T.premiumNoMoney}</Text>}
               </Box>
@@ -108,6 +110,7 @@ export async function blackMarketView($: $, els: Els, save: SaveData, now: numbe
             <Box key={`night-market-${slot.id}`} flexDirection="column" borderStyle="round" paddingX={1}>
               <Text bold>{name}</Text>
               <Text dimColor>{T.blackMarketNote[slot.id] ?? ''}</Text>
+              {slot.id === 'curse-gear' ? <Text>{curseDescription()}</Text> : <Box />}
               <Text>{price}{limitLine}</Text>
               {canBuy
                 ? <Button key={`market-buy-${slot.id}`} label={T.blackMarketBuy(name, price)} onPress={() => buyNightMarketGood($, slot.id as BlackMarketItemId)} />

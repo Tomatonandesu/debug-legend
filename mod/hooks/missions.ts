@@ -2,6 +2,7 @@ import type { BattleReport, FeatureId, Mission, Missions, SaveData } from '../ty
 import type { Reward } from './calendar'
 import { READY, grant, isUnlocked } from './calendar'
 import { random } from './gear'
+import { farmLevel } from './farm'
 import { hasBossGear } from './gear'
 import { USES, weekKey } from './shop'
 
@@ -11,23 +12,27 @@ import { USES, weekKey } from './shop'
 // 日課・週課の選び方は「日付とセーブの種」から決める（同じ日なら、どのセッションでも同じ）。
 
 /** 日課・週課に出る行動の種類。needs = その施設が開いていないと出ない */
-export const MISSION_KINDS = ['kills', 'bossTries', 'chests', 'shopBuys', 'potions', 'mineHits', 'stairs', 'harvests', 'cooks', 'pests', 'expeditions', 'enhances'] as const
+export const MISSION_KINDS = ['kills', 'bossTries', 'chests', 'shopBuys', 'potions', 'mineHits', 'stairs', 'harvests', 'cooks', 'pests', 'expeditions', 'enhances', 'petFeeds', 'cartCollects', 'goldenCrops', 'maxPlus'] as const
 export type MissionKind = (typeof MISSION_KINDS)[number]
 
 /** 目標の数（日課・週課）。仮の値 */
-const GOALS: Record<MissionKind, { daily: number; weekly: number; needs?: FeatureId }> = {
+const GOALS: Record<MissionKind, { daily?: number; weekly?: number; needs?: FeatureId }> = {
   kills: { daily: 150, weekly: 2_000 },
   bossTries: { daily: 1, weekly: 5 },
   chests: { daily: 10, weekly: 80 },
   shopBuys: { daily: 1, weekly: 10, needs: 'shop' },
   potions: { daily: 1, weekly: 5, needs: 'shop' },
-  mineHits: { daily: 30, weekly: 200, needs: 'mine' },
-  stairs: { daily: 3, weekly: 20, needs: 'mine' },
+  mineHits: { daily: 20, weekly: 200, needs: 'mine' },
+  stairs: { daily: 2, weekly: 5, needs: 'mine' },
   harvests: { daily: 6, weekly: 40, needs: 'farm' },
   cooks: { daily: 2, weekly: 12, needs: 'farm' },
   pests: { daily: 3, weekly: 10, needs: 'farm' },
-  expeditions: { daily: 1, weekly: 5, needs: 'expedition' },
+  expeditions: { daily: 1, weekly: 8, needs: 'expedition' },
   enhances: { daily: 3, weekly: 20, needs: 'smith' },
+  petFeeds: { daily: 2, needs: 'pet' },
+  cartCollects: { daily: 1, needs: 'goldmine' },
+  goldenCrops: { weekly: 1, needs: 'farm' },
+  maxPlus: { weekly: 8, needs: 'smith' },
 }
 
 export const DAILY_COUNT = 3
@@ -36,7 +41,7 @@ export const WEEKLY_COUNT = 5
 /** 日課 1 つ・週課 1 つのごほうび */
 export const DAILY_REWARD: readonly Reward[] = [{ kind: 'stars', amount: 5 }, { kind: 'chests', amount: 2 }]
 export const WEEKLY_REWARD: readonly Reward[] = [{ kind: 'stars', amount: 10 }]
-/** 3 つ全部（日課）・5 つ全部（週課）のおまけ。日課の箱 = 薬 1 つ（ランダム） */
+/** 3 つ全部（日課）・5 つ全部（週課）のおまけ */
 export const DAILY_ALL_STARS = 10
 export const WEEKLY_ALL_STARS = 60
 
@@ -90,7 +95,8 @@ export function rollMissions(save: SaveData, day: string): SaveData {
   if (m.week !== week) {
     next.week = week
     // 出せる種類が 5 つを超えたら、週ごとに 5 つを選ぶ（並びは種類の順のまま）
-    const picked = kinds.length > WEEKLY_COUNT ? pickKinds(kinds, `weekly:${week}:${save.createdAt}`, WEEKLY_COUNT).sort((a, b) => MISSION_KINDS.indexOf(a) - MISSION_KINDS.indexOf(b)) : kinds
+    const weeklyKinds = availableKinds(save, 'weekly')
+    const picked = weeklyKinds.length > WEEKLY_COUNT ? pickKinds(weeklyKinds, `weekly:${week}:${save.createdAt}`, WEEKLY_COUNT).sort((a, b) => MISSION_KINDS.indexOf(a) - MISSION_KINDS.indexOf(b)) : weeklyKinds
     next.weekly = picked.map(kind => newMission(save, kind, 'weekly'))
     next.weeklyAllClaimed = false
   }
@@ -126,6 +132,9 @@ export function countReport(save: SaveData, report: BattleReport, day: string): 
   let next = count(save, 'kills', report.kills, day)
   next = count(next, 'bossTries', report.bossWins.length + report.bossLosses.length, day)
   next = count(next, 'bossWins', report.bossWins.length, day)
+  if (save.hard.loop > 0 && report.bossWins.length > 0) {
+    next = { ...next, codex: { ...next.codex, seen: [...new Set([...next.codex.seen, ...report.bossWins.map(chapter => `hard:win:${chapter}`)])] } }
+  }
   const newKills = counted(next, 'kills')
   const bonusChests = hasBossGear(save, 'gc-gloves') ? Math.max(0, Math.floor(newKills / 100) - Math.floor(oldKills / 100)) : 0
   if (bonusChests > 0) {
@@ -139,11 +148,11 @@ export function countReport(save: SaveData, report: BattleReport, day: string): 
 // ---- 日課・週課 ----
 
 /** いま出せる種類（開いていて、遊べる施設のものだけ） */
-export function availableKinds(save: SaveData): MissionKind[] {
+export function availableKinds(save: SaveData, scope: 'daily' | 'weekly' = 'daily'): MissionKind[] {
   return MISSION_KINDS.filter(kind => {
     const needs = GOALS[kind].needs
 
-    return needs === undefined || (READY.has(needs) && isUnlocked(save, needs))
+    return GOALS[kind][scope] !== undefined && (needs === undefined || (READY.has(needs) && isUnlocked(save, needs)))
   })
 }
 
@@ -160,10 +169,13 @@ function pickKinds(pool: readonly MissionKind[], seed: string, size: number): Mi
   return picked
 }
 
-const newMission = (save: SaveData, kind: MissionKind, scope: 'daily' | 'weekly'): Mission => ({ id: kind, goal: GOALS[kind][scope], base: counted(save, kind), claimed: false })
+// +8 の週課は、所持装備の最大値ではなく「強化して +8 以上になった成功回数」を使う。
+const missionCount = (save: SaveData, kind: string): number => counted(save, kind === 'maxPlus' ? 'enhanced8' : kind)
+const newMission = (save: SaveData, kind: MissionKind, scope: 'daily' | 'weekly'): Mission => ({ id: kind, goal: GOALS[kind][scope]!, base: missionCount(save, kind), claimed: false })
 
 /** 進み具合（0〜目標） */
-export const missionProgress = (save: SaveData, mission: Mission): number => Math.max(0, Math.min(mission.goal, counted(save, mission.id) - mission.base))
+export const missionProgress = (save: SaveData, mission: Mission): number =>
+  Math.max(0, Math.min(mission.goal, (missionCount(save, mission.id) - mission.base) * (mission.id === 'maxPlus' ? mission.goal : 1)))
 
 export const isMissionDone = (save: SaveData, mission: Mission): boolean => missionProgress(save, mission) >= mission.goal
 
@@ -171,13 +183,16 @@ export type Scope = 'daily' | 'weekly'
 
 const listOf = (save: SaveData, scope: Scope): Mission[] => (scope === 'daily' ? save.missions.daily : save.missions.weekly)
 
-/** 日課の箱（薬 1 つ）。日付とセーブの種から決まる */
+/** 日課の箱。開いた施設の品だけから、日付とセーブの種で決まる */
 export function dailyBox(save: SaveData, day: string): Reward {
-  const potions = Object.keys(USES)
+  const items = Object.keys(USES)
     .filter(id => id.startsWith('potion-'))
     .sort()
+  if (READY.has('mine') && isUnlocked(save, 'mine')) items.push('pick')
+  if (READY.has('farm') && isUnlocked(save, 'farm')) items.push('seed-carrot')
+  if (READY.has('pet') && isUnlocked(save, 'pet')) items.push('treat')
 
-  return { kind: 'item', id: potions[hash(`box:${day}:${save.createdAt}`) % Math.max(1, potions.length)] ?? 'potion-power-s', amount: 1 }
+  return { kind: 'item', id: items[hash(`box:${day}:${save.createdAt}`) % items.length]!, amount: 1 }
 }
 
 /** 日課・週課 1 つのごほうびを受け取る。まだ達成していない・受け取り済みなら undefined。最後の 1 つで全部そろうとおまけも */
@@ -221,7 +236,7 @@ export function swapDaily(input: SaveData, day: string, index: number): SaveData
 export function completeMissions(input: SaveData, day: string, scope: Scope): SaveData {
   let save = rollMissions(input, day)
   for (const mission of listOf(save, scope)) {
-    save = count(save, mission.id, mission.goal - missionProgress(save, mission), day)
+    save = count(save, mission.id === 'maxPlus' ? 'enhanced8' : mission.id, mission.id === 'maxPlus' ? (isMissionDone(save, mission) ? 0 : 1) : mission.goal - missionProgress(save, mission), day)
   }
 
   return save
@@ -231,6 +246,7 @@ export function completeMissions(input: SaveData, day: string, scope: Scope): Sa
 
 /** 実績の数え方。ほとんどは数えたカウンター。level・evolution・stamps・playedDays はセーブの値そのもの */
 export type Metric = MissionKind | 'bossWins' | 'answers' | 'playedDays' | 'level' | 'evolution' | 'stamps'
+  | 'depth' | 'goldenCrops' | 'petForm' | 'maxPlus' | 'recipes' | 'souls' | 'trueBoss' | 'hardLoops' | 'farmLevel' | 'fossils'
 
 export type Achievement = { id: string; kind: Metric; goal: number; reward: readonly Reward[] }
 
@@ -239,7 +255,7 @@ const psi: Reward = { kind: 'psi', amount: 1 }
 const title = (id: string): Reward => ({ kind: 'title', id })
 const make = (kind: Metric, goal: number, ...reward: Reward[]): Achievement => ({ id: `${kind}-${goal}`, kind, goal, reward })
 
-/** 実績 30 個（いま数えられるものだけ。あとの施設の実績は、その施設を作るときに足す） */
+/** 実績 80 個。先頭の既存 30 個の ID・報酬は変えない */
 export const ACHIEVEMENTS: readonly Achievement[] = [
   make('kills', 1_000, stars(10)),
   make('kills', 10_000, stars(20)),
@@ -271,6 +287,31 @@ export const ACHIEVEMENTS: readonly Achievement[] = [
   make('evolution', 3, psi, title('summit')),
   make('stamps', 14, stars(20)),
   make('stamps', 28, stars(40)),
+  make('shopBuys', 1, stars(10)),
+  ...(['mineHits', 'stairs', 'harvests', 'cooks', 'pests', 'expeditions', 'enhances', 'petFeeds', 'cartCollects'] as const)
+    .flatMap(kind => [make(kind, 1, stars(10)), make(kind, 10, stars(20)), make(kind, 100, psi)]),
+  make('depth', 10, stars(10)),
+  make('depth', 50, stars(20)),
+  make('depth', 100, psi),
+  make('goldenCrops', 1, stars(10)),
+  make('goldenCrops', 10, stars(20)),
+  make('goldenCrops', 100, psi),
+  make('petForm', 2, stars(20)),
+  make('petForm', 3, psi),
+  make('maxPlus', 8, stars(20)),
+  make('maxPlus', 15, psi),
+  make('recipes', 4, stars(10)),
+  make('recipes', 10, stars(20)),
+  make('recipes', 15, psi),
+  make('souls', 1, stars(10)),
+  make('souls', 5, stars(20)),
+  make('souls', 10, psi),
+  make('trueBoss', 1, psi),
+  make('hardLoops', 1, psi),
+  make('farmLevel', 5, stars(10)),
+  make('farmLevel', 10, stars(20)),
+  make('farmLevel', 20, psi),
+  make('fossils', 10, psi),
 ]
 
 export const ACHIEVEMENT_IDS: ReadonlySet<string> = new Set(ACHIEVEMENTS.map(a => a.id))
@@ -281,6 +322,15 @@ export function metricOf(save: SaveData, kind: Metric): number {
   if (kind === 'evolution') return save.evolution
   if (kind === 'stamps') return save.calendar.stamps
   if (kind === 'playedDays') return save.calendar.playedDays
+  if (kind === 'depth') return save.mine.deepest
+  if (kind === 'petForm') return Math.max(0, ...save.pets.owned.map(pet => pet.form))
+  if (kind === 'maxPlus') return Math.max(counted(save, kind), ...[...Object.values(save.equipment), ...save.stash, save.pending].map(item => item?.plus ?? 0))
+  if (kind === 'recipes') return new Set(save.codex.seen.filter(key => key.startsWith('dish:'))).size
+  if (kind === 'souls') return save.souls.length
+  if (kind === 'trueBoss') return save.seal.trueBoss.beaten
+  if (kind === 'hardLoops') return save.hard.loop
+  if (kind === 'farmLevel') return farmLevel(save)
+  if (kind === 'fossils') return save.mine.fossils.length
 
   return counted(save, kind)
 }

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { RenderElement } from 'claude-code'
 
 import type { AdventurerId, ExpeditionLunch, SaveData } from '../types'
-import { buyGood, collectExpedition, visitNightMarket, refreshShop, sellGood, sendExpedition, takeShopAmulet, takeShopLuckyBag, useBagItem } from './actions'
+import { buyGood, collectExpedition, visitNightMarket, refreshShop, sellGood, sendExpedition, takeShopAmulet, takeShopLuckyBag, useBagItem, usePetEgg } from './actions'
 import { buffLeft, buffRate } from './buffs'
 import { READY, featureDay, isNew, isUnlocked, priceUnit } from './calendar'
 import { introBox } from './daily-screens'
@@ -14,7 +14,7 @@ import type { Slot } from './shop'
 import { AFFINITY_POINTS, RANK_SPENT, USES, VETERAN, affinityLevel, rankOf, refreshPrice, sellPrice, stock, weekKey } from './shop'
 import { T } from './texts'
 import { clearedChapter, hireCost, tripReady, tripRemainingMs } from './expedition'
-import { isPetAway } from './pets'
+import { eggSpecies, isPetAway } from './pets'
 import { smithView } from './smith-screen'
 import { blackMarketView, premiumView } from './premium-screen'
 import { isBlackMarketOpen } from './premium'
@@ -287,7 +287,10 @@ async function shopView($: $, els: Els, save: SaveData): Promise<RenderElement> 
           <Box key={`use-row-${id}`} flexDirection="row" gap={1} alignItems="center">
             {itemIcon(els, id) ?? <Box />}
             <Text>{T.reward.item(T.bagItem[id] ?? id, count)}</Text>
-            <Button key={`use-${id}`} label={USES[id]?.kind === 'box' ? T.openButton : T.useButton} onPress={() => useBagItem($, id)} />
+            {id === 'egg' ? <Box flexDirection="row" flexWrap="wrap" gap={1}>
+              {eggSpecies(save).map(species => <Button key={`use-egg-${species}`} label={`${T.petSpeciesName[species]} · ${T.petEggChoose}`} onPress={() => usePetEgg($, species)} />)}
+              {eggSpecies(save).length === 0 ? <Text dimColor>{T.petEggWait}</Text> : <Box />}
+            </Box> : <Button key={`use-${id}`} label={USES[id]?.kind === 'box' ? T.openButton : T.useButton} onPress={() => useBagItem($, id)} />}
           </Box>
         ))}
       </Box>

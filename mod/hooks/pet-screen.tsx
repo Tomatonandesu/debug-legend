@@ -1,18 +1,18 @@
 import type { RenderElement } from 'claude-code'
 
 import type { Pet, SaveData } from '../types'
-import { activatePet, choosePairPetEgg, choosePetEgg, evolveCompanion, equipPetCollar, feedCompanion, namePet, patPet, removePetCollar, toggleCompanion } from './actions'
-import { READY, isNew, isUnlocked } from './calendar'
+import { claimPairEggStars, choosePairPetEgg, choosePetEgg, evolveCompanion, equipPetCollar, exchangeCompanionEgg, feedCompanion, namePet, patPet, removePetCollar, swapCompanion, usePetEgg } from './actions'
+import { isNew } from './calendar'
 import { introBox } from './daily-screens'
 import { petPortrait } from './visual-parts'
-import { PAIR_SPECIES, activePair, activePets, STARTER_SPECIES, effectsForPet, isPetAway, petExpToNext } from './pets'
+import { PET_SPECIES, activePair, activePets, battlePetSlots, canClaimFreeEgg, canExchangePetEgg, eggSpecies, freeEggSpecies, STARTER_SPECIES, effectsForPet, isPetAway, petExpToNext } from './pets'
 import type { $ } from './persist'
 import { today } from './persist'
 import { T } from './texts'
 
 type Els = ReturnType<$['ui']['resolve']>
 
-export const hasPets = (save: SaveData): boolean => READY.has('pet') && isUnlocked(save, 'pet')
+export const hasPets = (save: SaveData): boolean => battlePetSlots(save) > 0
 
 function flowerCount(save: SaveData): number {
   return ['gold', 'q3', 'q2', 'q1'].reduce((sum, quality) => sum + (save.bag[`crop-flower-${quality}`] ?? 0), 0)
@@ -53,8 +53,11 @@ function petCard($: $, els: Els, save: SaveData, pet: Pet, day: string) {
         </Box>
       </Box>
       <Box flexDirection="row" flexWrap="wrap" gap={1}>
-        {!away && !active ? <Button key={`pet-active-${pet.id}`} label={T.petMakeActive} onPress={() => activatePet($, pet.id)} /> : <Box />}
-        {!away && active && save.pets.active.length > 1 ? <Button key={`pet-rest-${pet.id}`} label={T.petRest} onPress={() => toggleCompanion($, pet.id)} /> : <Box />}
+        {!away && !active ? Array.from({ length: battlePetSlots(save) }, (_, slot) => {
+          const expected = save.pets.active[slot] ?? null
+          return slot > save.pets.active.length || (expected !== null && isPetAway(save, expected)) ? <Box key={`pet-slot-${pet.id}-${slot}`} /> : <Button key={`pet-active-${pet.id}-${slot}`} label={T.petSwapSlot(slot + 1, save.pets.owned.find(item => item.id === expected)?.name ?? T.petEmptySlot)} onPress={() => swapCompanion($, pet.id, slot, expected)} />
+        }) : <Box />}
+        {!away && active ? <Button key={`pet-rest-${pet.id}`} label={T.petRest} onPress={() => swapCompanion($, null, save.pets.active.indexOf(pet.id), pet.id)} /> : <Box />}
         {!away && pats < 3 ? <Button key={`pet-pat-${pet.id}`} label={`${T.petPat} (${T.petPatCount(pats)})`} onPress={() => patPet($, pet.id)} /> : <Text dimColor>{T.petPatCount(pats)}</Text>}
         {(save.bag.treat ?? 0) > 0 && !away ? <Button key={`pet-treat-${pet.id}`} label={`${T.petFeed} ×${save.bag.treat}`} onPress={() => feedCompanion($, pet.id, 'treat')} /> : <Box />}
         {(save.bag['pet-meal'] ?? 0) > 0 && !away ? <Button key={`pet-meal-${pet.id}`} label={`${T.petMeal} ×${save.bag['pet-meal']}`} onPress={() => feedCompanion($, pet.id, 'pet-meal')} /> : <Box />}
@@ -65,7 +68,7 @@ function petCard($: $, els: Els, save: SaveData, pet: Pet, day: string) {
           {names.map((name, index) => <Button key={`pet-name-${pet.id}-${index}`} label={name} variant={pet.name === name ? 'primary' : 'secondary'} onPress={() => namePet($, pet.id, name)} />)}
         </Box>
       </Box>
-      {pet.level >= 45 && pet.form < 3 ? (
+      {!away && pet.level >= 45 && pet.form < 3 ? (
         <Box flexDirection="row" gap={1}>
           {flowers > 0 ? <Button key={`pet-evolve-${pet.id}`} label={`${T.petEvolve} (${T.petNeedFlower(flowers)})`} onPress={() => evolveCompanion($, pet.id)} /> : <Text dimColor>{T.petNeedFlower(flowers)}</Text>}
         </Box>
@@ -74,7 +77,7 @@ function petCard($: $, els: Els, save: SaveData, pet: Pet, day: string) {
         <Text>{T.petCollarTitle}: {pet.collar === null ? T.petNoCollar : (T.bagItem[pet.collar] ?? pet.collar)}</Text>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
           {pet.collar !== null && !away ? <Button key={`pet-collar-remove-${pet.id}`} label={T.petCollarRemove} onPress={() => removePetCollar($, pet.id)} /> : <Box />}
-          {collars.map(([id, count]) => <Button key={`pet-collar-${pet.id}-${id}`} label={`${T.bagItem[id] ?? id} ×${count}`} onPress={() => equipPetCollar($, pet.id, id)} />)}
+          {!away ? collars.map(([id, count]) => <Button key={`pet-collar-${pet.id}-${id}`} label={`${T.bagItem[id] ?? id} ×${count}`} onPress={() => equipPetCollar($, pet.id, id)} />) : <Box />}
         </Box>
       </Box>
       <Box flexDirection="column">
@@ -86,11 +89,7 @@ function petCard($: $, els: Els, save: SaveData, pet: Pet, day: string) {
 }
 
 /** 2 匹目の枠が使える（ペット 2 匹目が開いている） */
-export const hasPairSlot = (save: SaveData): boolean => READY.has('pet2') && isUnlocked(save, 'pet2')
-
-/** 13 日目の無料の卵を選べる */
-const canChooseFreeEgg = (save: SaveData): boolean =>
-  hasPairSlot(save) && !save.pets.freeEgg && save.pets.owned.length === 1 && save.pets.egg === null
+export const hasPairSlot = (save: SaveData): boolean => battlePetSlots(save) === 2
 
 /** 相性の行（2 匹が戦闘に出ているとき） */
 function pairLines($: $, els: Els, save: SaveData) {
@@ -140,21 +139,35 @@ export async function petsTab($: $, els: Els, save: SaveData): Promise<RenderEle
           <Text>{T.petEggProgress(egg.answers)}</Text>
         </Box>
       )}
-      {canChooseFreeEgg(save) ? (
+      {canClaimFreeEgg(save) ? (
         <Box flexDirection="column" gap={1} borderStyle="round" paddingX={1}>
           <Text bold>{T.petFreeEggTitle}</Text>
           <Text dimColor>{T.petFreeEggHint}</Text>
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
-            {PAIR_SPECIES.filter(species => !save.pets.owned.some(pet => pet.species === species)).map(species => (
+            {freeEggSpecies(save).map(species => (
               <Box key={`pet-pair-egg-box-${species}`} flexDirection="column" alignItems="center">
                 {petPortrait(els, species, 1, 0, 48) ?? <Box />}
                 <Button key={`pet-pair-egg-${species}`} label={`${T.petSpeciesName[species] ?? species} · ${T.petEggChoose}`} onPress={() => choosePairPetEgg($, species)} />
               </Box>
             ))}
+            {freeEggSpecies(save).length === 0 && save.pets.owned.length > 0 ? <Button key="pet-free-egg-stars" label={T.petFreeEggStars} onPress={() => claimPairEggStars($)} /> : <Box />}
           </Box>
         </Box>
       ) : <Box />}
-      {save.pets.owned.map(pet => petCard($, els, save, pet, day))}
+      <Text bold>{T.petBattleSlots(save.pets.active.length, battlePetSlots(save))}</Text>
+      {save.pets.active.map(id => save.pets.owned.find(pet => pet.id === id)).filter((pet): pet is Pet => pet !== undefined).map(pet => petCard($, els, save, pet, day))}
+      {save.pets.owned.filter(pet => isPetAway(save, pet.id) && !save.pets.active.includes(pet.id)).map(pet => petCard($, els, save, pet, day))}
+      <Box flexDirection="column" gap={1}>
+        <Text bold>{T.petInnTitle}</Text>
+        <Text dimColor>{T.petInnHint}</Text>
+        {save.pets.owned.filter(pet => !save.pets.active.includes(pet.id) && !isPetAway(save, pet.id)).sort((a, b) => PET_SPECIES.indexOf(a.species) - PET_SPECIES.indexOf(b.species)).map(pet => petCard($, els, save, pet, day))}
+        <Text>{T.petBagEggs(save.bag.egg ?? 0)}</Text>
+        {(save.bag.egg ?? 0) > 0 ? <Box flexDirection="row" flexWrap="wrap" gap={1}>
+          {eggSpecies(save).map(species => <Button key={`pet-bag-egg-${species}`} label={`${T.petSpeciesName[species]} · ${T.petEggChoose}`} onPress={() => usePetEgg($, species)} />)}
+          {eggSpecies(save).length === 0 ? <Text dimColor>{T.petEggWait}</Text> : <Box />}
+          {canExchangePetEgg(save) ? <Button key="pet-egg-exchange" label={T.petEggExchange} onPress={() => exchangeCompanionEgg($)} /> : <Box />}
+        </Box> : <Box />}
+      </Box>
       {save.pets.owned.length > 0 && save.pets.owned.length < 2 && !hasPairSlot(save) ? <Text dimColor>{T.petPairLater}</Text> : <Box />}
       {pairLines($, els, save)}
       <Box flexDirection="column">

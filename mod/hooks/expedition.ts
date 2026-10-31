@@ -1,5 +1,6 @@
 import type { Adventurer, AdventurerId, Drop, ExpeditionLunch, ExpeditionTrip, SaveData } from '../types'
 import { addItem, isUnlocked, priceUnit, READY } from './calendar'
+import { buffRate } from './buffs'
 import { growable, isFarmOpen, cropItemId } from './farm'
 import { combatPower, judge, random } from './gear'
 import { gainPetExp, petExpeditionBonus, isPetAway } from './pets'
@@ -127,7 +128,10 @@ export function claimTrip(save: SaveData, id: AdventurerId, now: number): Expedi
   const draw = tripRandom(save, adventurer, trip)
   const chance = successRate(save, adventurer, trip)
   const petLuck = trip.pet === undefined ? 0 : Math.max(0, petExpeditionBonus(save, trip.pet) - 0.15)
-  const greatChance = Math.min(0.4, chance * (0.07 + trip.hours * 0.012 + petLuck + (id === 'rico' ? 0.025 : 0)) + (hasPsychicNode(save, 'future-8') ? 0.1 : 0))
+  // ラムダ茶は成功率を変えず、大成功とまれな持ち帰りの確率に掛ける。
+  const fortune = 1 + buffRate(save, 'fortune')
+  const baseGreatChance = Math.min(0.4, chance * (0.07 + trip.hours * 0.012 + petLuck + (id === 'rico' ? 0.025 : 0)) + (hasPsychicNode(save, 'future-8') ? 0.1 : 0))
+  const greatChance = Math.min(0.4, Math.max(chance, baseGreatChance), baseGreatChance * fortune)
   const roll = draw()
   const outcome: ExpeditionOutcome = roll < greatChance ? 'great' : roll < chance ? 'success' : 'failed'
   const scale = outcome === 'great' ? 2 : outcome === 'failed' ? 0.5 : 1
@@ -159,13 +163,13 @@ export function claimTrip(save: SaveData, id: AdventurerId, now: number): Expedi
   next = { ...next, gold: next.gold + gold, wallet: { ...next.wallet, stars: next.wallet.stars + stars } }
 
   if (id === 'rico' && draw() < 0.5 * (outcome === 'failed' ? 0.5 : 1)) add('chest-ticket', quantity(1))
-  if (draw() < (outcome === 'great' ? 0.45 : 0.025 * trip.hours)) add('egg-shard', quantity(Math.max(1, trip.hours)))
-  if (draw() < (outcome === 'great' ? 0.25 : 0.02 * trip.hours)) {
+  if (draw() < (outcome === 'great' ? 0.45 : 0.025 * trip.hours) * fortune) add('egg-shard', quantity(Math.max(1, trip.hours)))
+  if (draw() < (outcome === 'great' ? 0.25 : 0.02 * trip.hours) * fortune) {
     const kind = ['speed', 'greed', 'luck', 'guard', 'exp', 'crit'][Math.floor(draw() * 6)]!
     const rarity = outcome === 'great' ? 3 + Math.floor(draw() * 3) : 1 + Math.floor(draw() * 2)
     add(`collar-${kind}-r${rarity}`, 1)
   }
-  if (next.pending === null && draw() < (outcome === 'great' ? 0.2 : 0.01 * trip.hours)) {
+  if (next.pending === null && draw() < (outcome === 'great' ? 0.2 : 0.01 * trip.hours) * fortune) {
     const rolled = rollAtRarity(next, outcome === 'great' ? 3 : 2)
     const judged = judge(rolled.save, rolled.item, now)
     next = judged.save

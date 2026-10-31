@@ -6,9 +6,9 @@ import type { Toggle, Volume } from './actions'
 import { challenge, changeVolume, chooseJob, cycleLanguage, decide, dismissAway, dismissShare, evolveHero, greetShop, openPane, pressLamp, summaryLines, toggleSetting, visitMine, visitNightMarket } from './actions'
 import { syncBgm } from './audio'
 import { intentUrl, momentText, statusText } from './share'
-import { auraFor, enemyFigure, enemyFigureById, heroFigure, heroTitle, itemName, plusColor, rarityColor, rarityName } from './art'
-import { attackSeconds, bossHpLeft, canEvolve, heroHpNow, hitDamage, hpTimeline, isFarming, isJobUnlocked, jobCooldownLeft, killRate, nextEvolutionLevel, retryIn, stageProgress, travelLeft } from './battle'
-import { BALANCE, EVOLUTION, JOB_CHANGE, TIME, TRAVEL } from './config'
+import { auraFor, curseDescription, enemyFigure, enemyFigureById, heroFigure, heroTitle, itemColor, itemName, plusColor, rarityName } from './art'
+import { attackSeconds, bossHpLeft, canEvolve, heroHpNow, hitDamage, hpTimeline, isFarming, isJobUnlocked, jobCooldownLeft, killRate, nextEvolutionLevel, retryIn, stageProgress, travelLeft, travelSeconds } from './battle'
+import { BALANCE, EVOLUTION, JOB_CHANGE, TIME } from './config'
 import { expToNext } from './fuel'
 import { SLOTS, combatPower, effectiveItemPower } from './gear'
 import type { $ } from './persist'
@@ -56,10 +56,10 @@ function isFreshStage(save: SaveData, isBusy: boolean): boolean {
   }
   const speed = isBusy ? TIME.workingMultiplier : 1
   if (isBossStage(save)) {
-    return (TRAVEL.seconds + save.stage.bossTime) / speed < 4
+    return (travelSeconds(save) + save.stage.bossTime) / speed < 4
   }
 
-  return save.stage.kills < 1 && (TRAVEL.seconds + save.stage.kills / Math.max(1e-6, killRate(save))) / speed < 4
+  return save.stage.kills < 1 && (travelSeconds(save) + save.stage.kills / Math.max(1e-6, killRate(save))) / speed < 4
 }
 
 const expPercent = (save: SaveData): number => Math.floor((save.exp / expToNext(save.level)) * 100)
@@ -85,12 +85,14 @@ export async function drawBand($: $, e: RenderInput<'AbovePrompt'>) {
     return undefined
   }
   const open = <Button key="open" label={T.openPane} hotkey="o" onPress={() => background(openPane($))} />
+  const curseLine = save.lastDrop?.item.curse === true ? lastDropLine($.ui.resolve(e), save) : <Box />
   const isFolded = save.settings.isBandFolded
   const fold = <Button key="fold" label={isFolded ? T.unfold : T.fold} plain dimColor onPress={() => toggleSetting($, 'isBandFolded')} />
   if (isFolded) {
     return (
       <Box flexDirection="row" gap={1}>
         <Text color="#ffd60a">{T.bandFolded(save.level, save.lamps)}</Text>
+        {curseLine}
         {save.away !== null && <Text dimColor>{T.awayTitle(Math.round(save.away.ms / 60_000))}</Text>}
         {open}
         {fold}
@@ -119,6 +121,7 @@ export async function drawBand($: $, e: RenderInput<'AbovePrompt'>) {
           {T.drops(save.lamps)}
         </Text>
         {isBusy && <Text dimColor>{T.working}</Text>}
+        {curseLine}
         {open}
         {fold}
         {awayLine}
@@ -160,6 +163,7 @@ export async function drawBand($: $, e: RenderInput<'AbovePrompt'>) {
         </Box>
         {awayLine}
       </Box>
+      {curseLine}
       {open}
       {fold}
     </Box>
@@ -290,7 +294,8 @@ function lampControls($: $, els: Els, save: SaveData) {
     const diff = pending.power - (save.equipment[pending.slot]?.power ?? 0)
     return (
       <Box flexDirection="column" alignItems="center">
-        <Text color={rarityColor(pending.rarity)}>{T.pendingLine(`${rarityName(pending.rarity)} ${itemName(pending)}`, pending.power, diff)}</Text>
+        <Text color={itemColor(pending)}>{T.pendingLine(`${rarityName(pending.rarity)} ${itemName(pending)}`, pending.power, diff)}</Text>
+        {pending.curse === true ? <Text color={itemColor(pending)}>{curseDescription()}</Text> : <Box />}
         <Box flexDirection="row" gap={1}>
           <Button key="equip" label={T.equipNow} hotkey="e" variant="primary" onPress={() => decide($, 'equip')} />
           <Button key="sell" label={T.sellNow} hotkey="s" onPress={() => decide($, 'sell')} />
@@ -313,7 +318,7 @@ function lastDropLine(els: Els, save: SaveData) {
   }
 
   return (
-    <Text color={rarityColor(drop.item.rarity)}>
+    <Text color={itemColor(drop.item)}>
       {T.dropLine(rarityName(drop.item.rarity), itemName(drop.item), drop.item.power)} {T.dropAction[drop.action](drop.gold)}
     </Text>
   )
@@ -389,11 +394,11 @@ function battleTab($: $, e: RenderInput<'Pane'>, save: SaveData, now: number, is
   const speed = isWorking ? TIME.workingMultiplier : 1
   // 移動中（次の群れ・ボスのところまで）: 主人公が走り、背景が流れ、次の群れが歩いて入ってくる。実時間の秒にして渡す
   const travelNow = travelLeft(save)
-  const travel = travelNow > 0 ? { elapsed: (TRAVEL.seconds - travelNow) / speed, total: TRAVEL.seconds / speed } : undefined
+  const travel = travelNow > 0 ? { elapsed: (travelSeconds(save) - travelNow) / speed, total: travelSeconds(save) / speed } : undefined
   // 倒れたばかりの敵（倒してから 1.5 秒以内）: 倒れる演出を 1 回出す。群れを全部倒して次の群れのところに来たときは、前の群れの最後の 1 匹
   // （群れの 1 匹目は、移動のぶん（移動した秒数）も足す）
   const progress = save.stage.kills - defeated
-  const sinceKill = ((defeated === 0 ? TRAVEL.seconds - travelNow : 0) + progress / Math.max(1e-6, killRate(save))) / speed
+  const sinceKill = ((defeated === 0 ? travelSeconds(save) - travelNow : 0) + progress / Math.max(1e-6, killRate(save))) / speed
   // 前の群れ: ボスに負けて稼いでいるときは面がとぶので、前にいた面（from）の群れ。無ければ 1 つ前の面
   const from = save.stage.from ?? save.stage.stage - 1
   const previous = from >= 1 ? stageGroup(save.stage.chapter, from) : []
@@ -415,7 +420,7 @@ function battleTab($: $, e: RenderInput<'Pane'>, save: SaveData, now: number, is
       : undefined
   // いまの敵（ボス）との戦いが始まった時刻（戦闘の秒数。移動中なら移動が始まった時刻）。敵ごとに別の Svg にして、前の敵の Svg を使い回さない
   const fightStart =
-    Math.round((save.battleSeconds - (travel !== undefined ? TRAVEL.seconds - travelNow : isBoss ? save.stage.bossTime : progress / Math.max(1e-6, killRate(save)))) * 10) / 10
+    Math.round((save.battleSeconds - (travel !== undefined ? travelSeconds(save) - travelNow : isBoss ? save.stage.bossTime : progress / Math.max(1e-6, killRate(save)))) * 10) / 10
   // 戦闘画面の中身（ダメージの数字・攻撃の速さ・絵）が変わったら、Svg を作り直して必ず新しい絵にする（装備を変えたのに数字が古いままにならないように）
   // HP バーの動きは、Svg を作ったときの値から始まる。作り直すのは、敵を倒した・装備が変わった・作業中かどうかが変わったとき、
   // それと 30 秒ごと（ずれを直すため）だけ。10 秒ごとの描き直しでは同じ Svg を使い回す（重くならないように）
@@ -483,7 +488,7 @@ function slotCell(els: Els, Svg: SvgElement, save: SaveData, slot: SlotId) {
 }
 
 function slotText(els: Els, save: SaveData, slot: SlotId) {
-  const { Text } = els
+  const { Box, Text } = els
   const item = save.equipment[slot]
 
   return item === null ? (
@@ -491,9 +496,12 @@ function slotText(els: Els, save: SaveData, slot: SlotId) {
       [{T.slotGlyph[slot]}] {T.slot[slot]}: {T.emptySlot}
     </Text>
   ) : (
-    <Text color={plusColor(item)}>
-      [{T.slotGlyph[slot]}] {T.slot[slot]}: {rarityName(item.rarity)} {itemName(item)} {T.power(Math.round(effectiveItemPower(item)))}
-    </Text>
+    <Box flexDirection="column">
+      <Text color={plusColor(item)}>
+        [{T.slotGlyph[slot]}] {T.slot[slot]}: {rarityName(item.rarity)} {itemName(item)} {T.power(Math.round(effectiveItemPower(item)))}
+      </Text>
+      {item.curse === true ? <Text color={itemColor(item)}>{curseDescription()}</Text> : <Box />}
+    </Box>
   )
 }
 

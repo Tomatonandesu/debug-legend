@@ -37,6 +37,11 @@ export const FERT_SPEED = 1.3
 export const FERT_QUALITY_CHANCE = 0.4
 /** 実りから、この時間がたつと「熟れすぎ」（品質 -1。消えない） */
 export const OVERRIPE_MS = DAY
+/**
+ * 残りがこれより短ければ実ったとみなす（ミリ秒）。時刻（約 1.8 兆）に 0.000001 ミリ秒を足しても小数の精度で数が変わらないので、
+ * 1e-6 の差で止めると、水やりのあとに残ったわずかな端数のまま、いつまでも実らないことがあった
+ */
+const RIPE_SLACK_MS = 1
 /** 害虫: 1 区画あたり 1 時間にこの確率（嵐は 2 倍） */
 export const PEST_CHANCE = 0.04
 /** 金色の作物の確率（虹の日は 3 倍） */
@@ -264,7 +269,7 @@ export function plotView(save: SaveData, index: number, now: number): PlotView |
   let bugAt = 0
   let readyAt = 0
   for (let guard = 0; guard < 2_000; guard += 1) {
-    if (g >= need - 1e-6) {
+    if (g >= need - RIPE_SLACK_MS) {
       g = need
       readyAt = t
       break
@@ -279,7 +284,7 @@ export function plotView(save: SaveData, index: number, now: number): PlotView |
     }
     g += event - t
     t = event
-    if (g >= need - 1e-6) {
+    if (g >= need - RIPE_SLACK_MS) {
       continue
     }
     if (event === pestAt) {
@@ -516,7 +521,7 @@ export const RECIPES: readonly Recipe[] = [
   { id: 'onigiri', needs: { rice: 2 }, stored: 'dish-onigiri', learn: 'rice' },
   { id: 'melon-parfait', needs: { melon: 1, 'animal-milk': 1, berry: 2 }, buff: { kind: 'all', rate: 0.08, seconds: 3600 }, learn: 'melon', requires: 'bigfarm' },
   { id: 'herb-porridge', needs: { herb: 3, rice: 1 }, buff: { kind: 'heal', rate: 0.3, charges: 1 }, learn: 'herb' },
-  { id: 'full-course', needs: {}, learn: 'rice', requires: 'later' },
+  { id: 'full-course', needs: {}, learn: 'rice' },
   { id: 'pet-meal', needs: { carrot: 2, corn: 1, 'animal-egg': 1 }, stored: 'pet-meal', learn: 'corn', requires: 'pet' },
 ]
 
@@ -544,6 +549,11 @@ export function cookStatus(save: SaveData, id: string): CookStatus {
   }
   if (recipe.requires !== undefined && (recipe.requires === 'later' || !READY.has(recipe.requires) || !isUnlocked(save, recipe.requires))) {
     return 'locked'
+  }
+  if (id === 'full-course') {
+    if (!isFarmOpen(save)) return 'locked'
+    if (courseIngredients(save).length !== 3) return 'short'
+    return applyCourse(save) === undefined ? 'slots' : 'ok'
   }
   if (Object.entries(recipe.needs).some(([item, n]) => haveOf(save, item) < n)) {
     return 'short'
@@ -615,6 +625,7 @@ export function cook(save: SaveData, id: string): SaveData | undefined {
   if (recipe === undefined || cookStatus(save, id) !== 'ok') {
     return undefined
   }
+  if (id === 'full-course') return applyCourse(save)
   const taken = takeIngredients(save, recipe)
   if (recipe.stored !== undefined) {
     return addItem(taken.save, recipe.stored, 1)
@@ -622,6 +633,80 @@ export function cook(save: SaveData, id: string): SaveData | undefined {
   const buff = recipe.buff!
 
   return addFood(taken.save, id, buff.kind, dishRate(buff.rate, taken.rate), buff)
+}
+
+/** 料理を食べずに保存する。材料・品質は「作って食べる」と同じ */
+export function storeDish(save: SaveData, id: string): SaveData | undefined {
+  const recipe = recipeOf(id)
+  if (!isFarmOpen(save) || recipe === undefined || (recipe.buff === undefined && recipe.stored === undefined) || !knownRecipes(save).some(r => r.id === id)
+    || (recipe.requires !== undefined && (recipe.requires === 'later' || !READY.has(recipe.requires) || !isUnlocked(save, recipe.requires)))
+    || Object.entries(recipe.needs).some(([item, n]) => haveOf(save, item) < n)) return undefined
+  const taken = takeIngredients(save, recipe)
+  const stack = save.dishes.find(dish => dish.id === id && dish.quality === taken.rate)
+  if ((stack?.count ?? 0) >= 9_999 || (stack === undefined && save.dishes.length >= 60)) return undefined
+  const dishes = stack === undefined
+    ? [...save.dishes, { id, quality: taken.rate, count: 1 }]
+    : save.dishes.map(dish => dish === stack ? { ...dish, count: dish.count + 1 } : dish)
+  return { ...taken.save, dishes }
+}
+
+export function eatDish(save: SaveData, index: number): SaveData | undefined {
+  if (!isFarmOpen(save)) return undefined
+  const dish = save.dishes[index]
+  const recipe = dish === undefined ? undefined : recipeOf(dish.id)
+  if (dish === undefined || recipe === undefined) return undefined
+  if (recipe.stored !== undefined) {
+    if ((save.bag[recipe.stored] ?? 0) >= 9_999) return undefined
+    return takeDishes(addItem(save, recipe.stored, 1), [index])
+  }
+  if (recipe.buff === undefined) return undefined
+  const next = addFood(save, dish.id, recipe.buff.kind, dishRate(recipe.buff.rate, dish.quality), recipe.buff)
+  return next === undefined ? undefined : takeDishes(next, [index])
+}
+
+/** 一覧の先頭から 3 食。同じ料理でも 3 食分あれば使える。回数制の効果は回数を変えない */
+export function courseIngredients(save: SaveData): number[] {
+  const indexes: number[] = []
+  for (let i = 0; i < save.dishes.length && indexes.length < 3; i += 1) {
+    for (let n = 0; n < save.dishes[i]!.count && indexes.length < 3; n += 1) indexes.push(i)
+  }
+  return indexes
+}
+
+function takeDishes(save: SaveData, indexes: readonly number[]): SaveData {
+  return { ...save, dishes: save.dishes.map((dish, i) => ({ ...dish, count: dish.count - indexes.filter(index => index === i).length })).filter(dish => dish.count > 0) }
+}
+
+function applyCourse(save: SaveData): SaveData | undefined {
+  const indexes = courseIngredients(save)
+  if (indexes.length !== 3) return undefined
+  // フルコースは 3 効果で料理 1 枠。既存の同種効果とは強い方・長い方を残す。
+  const alive = save.buffs.filter(buff => buff.charges !== undefined ? buff.charges > 0 : (buff.until ?? 0) > save.battleSeconds)
+  const hasEffects = indexes.some(index => recipeOf(save.dishes[index]!.id)?.buff !== undefined)
+  const others = hasEffects ? alive.filter(buff => buff.dish !== 'full-course') : alive
+  if (hasEffects && new Set(others.filter(buff => buff.dish !== undefined).map(buff => buff.dish)).size >= 2) return undefined
+  const buffs = [...others]
+  let next = save
+  for (const index of indexes) {
+    const dish = save.dishes[index]!
+    const recipe = recipeOf(dish.id)
+    if (recipe?.stored !== undefined) {
+      if ((next.bag[recipe.stored] ?? 0) >= 9_999) return undefined
+      next = addItem(next, recipe.stored, 1)
+      continue
+    }
+    const effect = recipe?.buff
+    if (effect === undefined) return undefined
+    const old = buffs.find(buff => buff.dish !== undefined && buff.kind === effect.kind)
+    const prior = alive.find(buff => buff.dish === 'full-course' && buff.kind === effect.kind)
+    const rate = Math.max(old?.rate ?? 0, prior?.rate ?? 0, dishRate(effect.rate, dish.quality))
+    const combined = effect.charges !== undefined
+      ? { kind: effect.kind, rate, charges: Math.max(old?.charges ?? 0, prior?.charges ?? 0, effect.charges), dish: 'full-course' }
+      : { kind: effect.kind, rate, until: Math.max(old?.until ?? 0, prior?.until ?? 0, save.battleSeconds + (effect.seconds ?? 0) * 2), dish: 'full-course' }
+    if (old !== undefined) buffs.splice(buffs.indexOf(old), 1)
+    buffs.push(combined)
+  }
+  return takeDishes({ ...next, buffs }, indexes)
 }
 
 // ---- 大農場（12 日目、docs/DAILY.md の 13 章） ----
@@ -672,16 +757,17 @@ export function buildGreenhouse(save: SaveData, priceP: number): SaveData | unde
   return { ...paid, farm: { ...paid.farm, greenhouse: Array.from({ length: GREENHOUSE_PLOTS }, () => null) } }
 }
 
-/** ユニコードの花の種（温室を建てたあと、物価 P の何倍か）。温室でだけ育つ */
-export const FLOWER_SEED_PRICE = 3
+/** ユニコードの花の種（温室を建てたあと、星のかけら 5）。温室でだけ育つ */
+export const FLOWER_SEED_PRICE = 5
 
 export function buyFlowerSeed(save: SaveData, priceP: number): SaveData | undefined {
-  const price = Math.round(priceP * FLOWER_SEED_PRICE)
-  if (!isBigFarmOpen(save) || save.farm.greenhouse.length === 0 || save.gold < price) {
+  void priceP
+  const price = FLOWER_SEED_PRICE
+  if (!isBigFarmOpen(save) || save.farm.greenhouse.length === 0 || save.wallet.stars < price) {
     return undefined
   }
 
-  return addItem({ ...save, gold: save.gold - price }, seedId('flower'), 1)
+  return addItem({ ...save, wallet: { ...save.wallet, stars: save.wallet.stars - price } }, seedId('flower'), 1)
 }
 
 // ---- スプリンクラー ----

@@ -14,19 +14,20 @@ import { claimAchievement, claimMission, count as countUp, swapDaily } from './m
 import { canDig, collectCell, ensureFloor, fightBoss, goToFloor, isMineOpen, picksOf, rollMine, swing, toggleAuto, toggleBombMode, upgradePickaxe, useBomb } from './mine'
 import {
   buildDecor, buildGreenhouse, buyAnimal, buyFlowerSeed, chooseSignName, collectAnimal, cook as cookFood, expandFarm, farmLevel, feedAnimal,
-  fertilize as fertilizeFarmPlot, harvest as harvestFarmPlot, installSprinkler, killPest, patAnimal, plant as plantFarmCrop,
+  fertilize as fertilizeFarmPlot, harvest as harvestFarmPlot, installSprinkler, killPest, patAnimal, plant as plantFarmCrop, plotAt, storeDish, eatDish, courseIngredients,
 } from './farm'
-import { collect as collectGoldMine, fixDerail, pickNugget, smeltGoldIngot, upgrade as upgradeGoldMine, useGoldCart } from './goldmine'
+import { canSettlePetProduction, collect as collectGoldMine, fixDerail, pickNugget, settlePetProduction, smeltGoldIngot, tickGoldMine, upgrade as upgradeGoldMine, useGoldCart } from './goldmine'
 import type { Upgrade as GoldMineUpgrade } from './goldmine'
 import type { Scope } from './missions'
 import { claimTrip as claimExpeditionTrip, startTrip as startExpeditionTrip } from './expedition'
 import type { ExpeditionSetup } from './expedition'
-import { chooseEgg, choosePairEgg, toggleActivePet, equipCollar, evolvePet as evolveCompanionPure, feedPet as feedCompanionPure, patPet as patCompanionPure, removeCollar, renamePet, setActivePet } from './pets'
-import { buy, greet, refresh, sellItem, takeAmulet, takeLuckyBag, useItem } from './shop'
+import { answerEgg, chooseEgg, choosePairEgg, claimFreeEggStars, exchangePetEgg, swapActivePet, equipCollar, evolvePet as evolveCompanionPure, feedPet as feedCompanionPure, patPet as patCompanionPure, petBattleEffects, removeCollar, renamePet } from './pets'
+import { advanceSettled } from './lease'
+import { buy, greet, refresh, sellItem, takeAmulet, takeLuckyBag, USES, useItem } from './shop'
 import { applyGoldTrim, combine as combineSmithGear, craftBossGear, craftSet, disassemble as disassembleSmithGear, enhance as enhanceSmithGear, equipStashed, inheritPlus, reforge as reforgeSmithGear, sellStashed, weeklyGuardGift } from './smith'
 import type { EnhanceResult } from './smith'
 import { GEAR, LAMP } from './config'
-import { combatPower, pullLamp, resolvePending, sellValue } from './gear'
+import { combatPower, pullLamp, resolvePending } from './gear'
 import type { $ } from './persist'
 import { background, load, mutate } from './persist'
 import type { BlackMarketItemId } from './premium'
@@ -267,7 +268,19 @@ async function tryChange($: $, change: (save: SaveData, now: number, day: string
     const next = change(save, now, day)
     isDone = next !== undefined
     // 図鑑: 手に入れた装備・鉱石・金色の作物・料理の印をつける
-    return next === undefined ? save : syncCodex(next)
+    if (next === undefined) return save
+    // 鍛冶屋の新しい装備も入手時にハードを記録。既存装備には後付けしない。
+    const oldItems = [...Object.values(save.equipment), ...save.stash, save.pending]
+    const oldIds = new Set(oldItems.filter(item => item !== null).map(item => item.id))
+    const markGear = (item: SaveData['pending']): SaveData['pending'] =>
+      item !== null && save.hard.loop > 0 && item.id >= save.nextItemId && !oldIds.has(item.id) ? { ...item, hard: true } : item
+    const marked = {
+      ...next,
+      equipment: Object.fromEntries(Object.entries(next.equipment).map(([slot, item]) => [slot, markGear(item)])) as SaveData['equipment'],
+      stash: next.stash.map(item => markGear(item)!), pending: markGear(next.pending),
+    }
+    const maxPlus = Math.max(save.missions.counts.maxPlus ?? 0, ...[...Object.values(save.equipment), ...save.stash, save.pending, ...Object.values(marked.equipment), ...marked.stash, marked.pending].map(item => item?.plus ?? 0))
+    return syncCodex({ ...marked, missions: { ...marked.missions, counts: { ...marked.missions.counts, maxPlus } } })
   })
 
   return isDone
@@ -323,11 +336,17 @@ export function sellGood($: $, id: string, count: number): Promise<boolean> {
   return tryChange($, save => sellItem(save, id, count))
 }
 
-/** 持ち物を使う（宝箱チケット・薬・伝説箱・神話箱）。箱から出た装備はドロップと同じように知らせる */
+/** 持ち物を使う（宝箱チケット・薬・伝説箱・神話箱・延べ棒）。箱から出た装備はドロップと同じように知らせる */
 export async function useBagItem($: $, id: string): Promise<boolean> {
+  const use = USES[id]
   const before = await load($)
   const isDone = await tryChange($, (save, now, day) => {
-    const used = useItem(save, id, now)
+    const preview = use?.kind === 'petFood' ? useItem(save, id, now) : save
+    if (preview === undefined) return undefined
+    const settled = petBattleEffects(save).goldMineRate !== petBattleEffects(preview).goldMineRate ? settleCompanions(save, now, day) : save
+    if (settled === undefined) return undefined
+    const used = useItem(settled, id, now)
+    if (used !== undefined && use?.kind === 'petFood') return countUp(used, 'petFeeds', 1, day)
     // 薬を使った回数を数える
     return used === undefined || !id.startsWith('potion-') ? used : countUp(used, 'potions', 1, day)
   })
@@ -335,6 +354,8 @@ export async function useBagItem($: $, id: string): Promise<boolean> {
   if (isDone) logPsychicProcs(before, after)
   if (isDone && after !== undefined && after.lastDrop !== null && after.lastDrop.item.id !== before?.lastDrop?.item.id) {
     announce($, [after.lastDrop], after.settings)
+  } else if (isDone && use?.kind === 'ore') {
+    $.ui.toast(T.ingotMelted(T.bagItem[use.ore] ?? use.ore, use.amount))
   } else if (!isDone && after !== undefined) {
     $.ui.toast(T.useFailed)
   }
@@ -377,7 +398,8 @@ export async function enhanceGear($: $, id: number, useGuardStone: boolean): Pro
     result = enhanceSmithGear(save, id, useGuardStone)
     if (result === undefined) return undefined
     result = { ...result, save: weeklyGuardGift(result.save, day) ?? result.save }
-    return countUp(result.save, 'enhances', 1, day)
+    const next = countUp(result.save, 'enhances', 1, day)
+    return result.success && result.plus >= 8 ? countUp(next, 'enhanced8', 1, day) : next
   })
   if (done && result !== undefined) {
     $.ui.toast(T.smithAttempt(result.success, result.plus, result.protected))
@@ -406,12 +428,7 @@ export function equipStashGear($: $, id: number): Promise<boolean> {
 }
 
 export function sellStashGear($: $, id: number): Promise<boolean> {
-  return tryChange($, save => {
-    const item = save.stash.find(candidate => candidate.id === id)
-    const sold = sellStashed(save, id)
-    if (item === undefined || sold === undefined) return sold
-    return { ...sold, gold: sold.gold + sellValue(item, save) - sellValue(item) }
-  })
+  return tryChange($, save => sellStashed(save, id))
 }
 
 export function disassembleGear($: $, id: number): Promise<boolean> {
@@ -433,19 +450,78 @@ export function namePet($: $, id: string, name: string): Promise<boolean> {
 }
 
 export function activatePet($: $, id: string): Promise<boolean> {
-  return tryChange($, save => setActivePet(save, id))
+  let slot: number | undefined
+  return tryChange($, (save, now, day) => {
+    slot ??= save.pets.active.length
+    return settleCompanionSwap(save, now, day, id, slot, null)
+  })
+}
+
+/** 顔ぶれ・育成値が変わる前に、旧編成の生産と戦闘を同じ保存操作で確定する。 */
+function settleCompanions(save: SaveData, now: number, day: string): SaveData | undefined {
+  const ticked = tickGoldMine(save, now)
+  if (!canSettlePetProduction(ticked, now)) return undefined
+  const production = settlePetProduction(ticked, now)
+  const advanced = advanceSettled(production, now, day)
+  return withBossShare(advanced.save, advanced.gain.report, now)
+}
+
+/** 自動孵化も旧編成を精算してから行う。満杯で精算できなければ卵を保って次の回答で再試行する。 */
+export function answerCompanionEgg(save: SaveData, now: number, day: string): SaveData {
+  const answered = answerEgg(save)
+  if (answered.pets.active === save.pets.active) return answered
+  const settled = settleCompanions(save, now, day)
+  return settled === undefined ? save : answerEgg(settled)
+}
+
+/** 検証・旧編成での時間精算・交換を、同じ保存操作（再適用を含む）で行う。 */
+function settleCompanionSwap(save: SaveData, now: number, day: string, incoming: string | null, slot: number, expected: string | null): SaveData | undefined {
+  if (swapActivePet(save, incoming, slot, expected) === undefined) return undefined
+  const settled = settleCompanions(save, now, day)
+  return settled === undefined ? undefined : swapActivePet(settled, incoming, slot, expected)
+}
+
+export function swapCompanion($: $, incoming: string | null, slot: number, expected: string | null): Promise<boolean> {
+  return tryChange($, (save, now, day) => settleCompanionSwap(save, now, day, incoming, slot, expected))
+}
+
+export function usePetEgg($: $, species: PetSpecies): Promise<boolean> {
+  return tryChange($, (save, now) => useItem(save, 'egg', now, species))
+}
+
+export function exchangeCompanionEgg($: $): Promise<boolean> {
+  return tryChange($, save => exchangePetEgg(save))
+}
+
+export function claimPairEggStars($: $): Promise<boolean> {
+  return tryChange($, save => claimFreeEggStars(save))
 }
 
 export function patPet($: $, id: string): Promise<boolean> {
-  return tryChange($, (save, _now, day) => patCompanionPure(save, id, day))
+  return tryChange($, (save, now, day) => {
+    const preview = patCompanionPure(save, id, day)
+    if (preview === undefined) return undefined
+    const settled = petBattleEffects(save).goldMineRate !== petBattleEffects(preview).goldMineRate ? settleCompanions(save, now, day) : save
+    return settled === undefined ? undefined : patCompanionPure(settled, id, day)
+  })
 }
 
 export function feedCompanion($: $, petId: string, item: 'treat' | 'pet-meal'): Promise<boolean> {
-  return tryChange($, save => feedCompanionPure(save, item, petId))
+  return tryChange($, (save, now, day) => {
+    const preview = feedCompanionPure(save, item, petId)
+    if (preview === undefined) return undefined
+    const settled = petBattleEffects(save).goldMineRate !== petBattleEffects(preview).goldMineRate ? settleCompanions(save, now, day) : save
+    const next = settled === undefined ? undefined : feedCompanionPure(settled, item, petId)
+    return next === undefined ? undefined : countUp(next, 'petFeeds', 1, day)
+  })
 }
 
 export function evolveCompanion($: $, id: string): Promise<boolean> {
-  return tryChange($, save => evolveCompanionPure(save, id))
+  return tryChange($, (save, now, day) => {
+    if (evolveCompanionPure(save, id) === undefined) return undefined
+    const settled = settleCompanions(save, now, day)
+    return settled === undefined ? undefined : evolveCompanionPure(settled, id)
+  })
 }
 
 export function equipPetCollar($: $, petId: string, collar: string): Promise<boolean> {
@@ -459,14 +535,22 @@ export function removePetCollar($: $, petId: string): Promise<boolean> {
 // ---- 遠征 ----
 
 export function sendExpedition($: $, id: AdventurerId, setup: ExpeditionSetup): Promise<boolean> {
-  return tryChange($, (save, now) => startExpeditionTrip(save, id, setup, now))
+  return tryChange($, (save, now, day) => {
+    if (startExpeditionTrip(save, id, setup, now) === undefined) return undefined
+    const settled = setup.pet == null ? save : settleCompanions(save, now, day)
+    const next = settled === undefined ? undefined : startExpeditionTrip(settled, id, setup, now)
+    return next === undefined ? undefined : countUp(next, 'expeditions', 1, day)
+  })
 }
 
 export async function collectExpedition($: $, id: AdventurerId): Promise<boolean> {
   let result = undefined as ReturnType<typeof claimExpeditionTrip>
   const done = await tryChange($, (save, now, day) => {
-    result = claimExpeditionTrip(save, id, now)
-    return result === undefined ? undefined : countUp(result.save, 'expeditions', 1, day)
+    if (claimExpeditionTrip(save, id, now) === undefined) return undefined
+    const trip = save.expedition.adventurers.find(adventurer => adventurer.id === id)?.trip
+    const settled = trip?.pet === undefined ? save : settleCompanions(save, now, day)
+    result = settled === undefined ? undefined : claimExpeditionTrip(settled, id, now)
+    return result === undefined ? undefined : countUp(result.save, 'expeditionReturns', 1, day)
   })
   if (done && result !== undefined) {
     const current = await load($)
@@ -661,7 +745,15 @@ export function plantCrop($: $, index: number, crop: string): Promise<boolean> {
 
 /** 肥料をまく */
 export function fertilizePlot($: $, index: number): Promise<boolean> {
-  return tryChange($, (save, now) => fertilizeFarmPlot(save, index, now))
+  let origin: { crop: string; at: number } | undefined
+  return tryChange($, (save, now) => {
+    const plot = plotAt(save, index)
+    if (plot === undefined || plot === null) return undefined
+    // 入れ直すときも、最初に操作した作物だけに使う（温室も同じ）。
+    origin ??= { crop: plot.crop, at: plot.at }
+    if (plot.crop !== origin.crop || plot.at !== origin.at) return undefined
+    return fertilizeFarmPlot(save, index, now)
+  })
 }
 
 /** 実った作物を収穫し、日課にも数える */
@@ -671,7 +763,9 @@ export async function harvestPlot($: $, index: number): Promise<boolean> {
     const result = harvestFarmPlot(save, index, now)
     leveledUp = result?.isLevelUp ?? false
 
-    return result === undefined ? undefined : countUp(result.save, 'harvests', 1, day)
+    if (result === undefined) return undefined
+    const next = countUp(result.save, 'harvests', 1, day)
+    return result.save.farm.last?.quality === 'gold' ? countUp(next, 'goldenCrops', result.save.farm.last.amount, day) : next
   })
   if (isDone && leveledUp) {
     const save = await load($)
@@ -692,12 +786,39 @@ export function clearFarmPest($: $, index: number): Promise<boolean> {
   })
 }
 
-/** 料理を作り、日課にも数える */
-export function cookRecipe($: $, id: string): Promise<boolean> {
+type DishTarget = { id: string; quality: number }
+
+/** 料理を作り、日課にも数える。コースの材料は描画時（直接呼ぶときは初回実行時）に固定する。 */
+export function cookRecipe($: $, id: string, expected?: readonly DishTarget[]): Promise<boolean> {
+  let origin = expected?.map(dish => ({ id: dish.id, quality: dish.quality }))
   return tryChange($, (save, _now, day) => {
+    if (id === 'full-course') {
+      const dishes = courseIngredients(save).map(index => save.dishes[index]!)
+      const targets = origin ?? dishes.map(dish => ({ id: dish.id, quality: dish.quality }))
+      origin = targets
+      if (targets.length !== 3 || dishes.length !== 3 || dishes.some((dish, i) => dish.id !== targets[i]!.id || dish.quality !== targets[i]!.quality)) return undefined
+    }
     const next = cookFood(save, id)
 
     return next === undefined ? undefined : countUp(recordDish(next, id), 'cooks', 1, day)
+  })
+}
+
+export function prepareRecipe($: $, id: string): Promise<boolean> {
+  return tryChange($, (save, _now, day) => {
+    const next = storeDish(save, id)
+    return next === undefined ? undefined : countUp(recordDish(next, id), 'cooks', 1, day)
+  })
+}
+
+export function eatStoredDish($: $, index: number, expected?: DishTarget): Promise<boolean> {
+  let origin = expected === undefined ? undefined : { id: expected.id, quality: expected.quality }
+  return tryChange($, save => {
+    const dish = save.dishes[index]
+    if (dish === undefined) return undefined
+    origin ??= { id: dish.id, quality: dish.quality }
+    if (dish.id !== origin.id || dish.quality !== origin.quality) return undefined
+    return eatDish(save, index)
   })
 }
 
@@ -742,7 +863,10 @@ export async function dismissAway($: $): Promise<void> {
 
 /** 回収する（金鉱・銀鉱が持ち物に入る） */
 export async function collectGoldMineOre($: $): Promise<boolean> {
-  const isDone = await tryChange($, (save, now) => collectGoldMine(save, now))
+  const isDone = await tryChange($, (save, now, day) => {
+    const next = collectGoldMine(save, now)
+    return next === undefined ? undefined : countUp(next, 'cartCollects', 1, day)
+  })
   if (isDone) {
     const save = await load($)
     if (save !== undefined) {
@@ -852,7 +976,12 @@ export function choosePairPetEgg($: $, species: PetSpecies): Promise<boolean> {
 }
 
 export function toggleCompanion($: $, id: string): Promise<boolean> {
-  return tryChange($, save => toggleActivePet(save, id))
+  let target: { incoming: string | null; slot: number; expected: string | null } | undefined
+  return tryChange($, (save, now, day) => {
+    const index = save.pets.active.indexOf(id)
+    target ??= index < 0 ? { incoming: id, slot: save.pets.active.length, expected: null } : { incoming: null, slot: index, expected: id }
+    return settleCompanionSwap(save, now, day, target.incoming, target.slot, target.expected)
+  })
 }
 
 // ---- 図鑑・封印の魔法陣 ----

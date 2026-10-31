@@ -5,6 +5,7 @@ import { CROPS, RECIPES } from './farm'
 import { BOSS_GEAR_IDS, CODEX_TIERS, NAME_VARIANTS, RARITY_COUNT, SET_IDS, SLOTS, codexGearKey } from './gear'
 import { DIARY_COUNT, FOSSIL_COUNT, GEMS, ORES } from './mine'
 import { smithAffinity } from './smith'
+import { PET_SPECIES } from './pets'
 import { CHAPTERS, CHAPTER_COUNT } from './world'
 
 // 図鑑（14 日目、docs/DAILY.md の 14 章）。$ を使わない純粋な関数。
@@ -24,11 +25,11 @@ export const BOSS_IDS: readonly string[] = CHAPTERS.map(chapter => chapter.boss)
 export const MOB_STAR_STEPS: readonly number[] = [1, 10, 100]
 export const mobStars = (kills: number): number => MOB_STAR_STEPS.filter(step => kills >= step).length
 
-export type CategoryId = 'mobs' | 'bosses' | 'gear' | 'crops' | 'dishes' | 'ores' | 'fossils' | 'pets' | 'reads'
-export const CATEGORIES: readonly CategoryId[] = ['mobs', 'bosses', 'gear', 'crops', 'dishes', 'ores', 'fossils', 'pets', 'reads']
+export type CategoryId = 'mobs' | 'bosses' | 'gear' | 'crops' | 'dishes' | 'ores' | 'fossils' | 'pets' | 'reads' | 'hard'
+export const CATEGORIES: readonly CategoryId[] = ['mobs', 'bosses', 'gear', 'crops', 'dishes', 'ores', 'fossils', 'pets', 'reads', 'hard']
 
-/** 料理（まだ作れない 'later' のフルコースは数えない。100% にできなくなるため） */
-export const DISH_IDS: readonly string[] = RECIPES.filter(recipe => recipe.requires !== 'later').map(recipe => recipe.id)
+/** 作れる料理 15 品 */
+export const DISH_IDS: readonly string[] = RECIPES.map(recipe => recipe.id)
 export const ORE_IDS: readonly string[] = [...ORES, ...GEMS]
 
 /** 読み物の数: 鉱山の日記 12・親方の昔話 6・ノクスの正体 5・学者の手記 10・真のラスボスの伝承 7 */
@@ -40,13 +41,19 @@ export type Entry = { id: string; got: boolean; count?: number }
 const isSeen = (save: SaveData, key: string): boolean => save.codex.seen.includes(key)
 
 /** 学者の手記を読める数（遠征を終えた回数。冒険者セージが帰ってくるたびに 1 話） */
-const scholarCount = (save: SaveData): number => Math.min(READ_COUNTS.scholar, Math.floor(save.missions.counts.expeditions ?? 0))
+const scholarCount = (save: SaveData): number => Math.min(READ_COUNTS.scholar, Math.floor(save.missions.counts.expeditionReturns ?? 0))
 
 /** 親方の昔話を読める数（鍛冶屋が開いていれば 1 話、好感度が上がるたびに 1 話） */
 const masterCount = (save: SaveData): number => (isUnlocked(save, 'smith') ? Math.min(READ_COUNTS.master, 1 + smithAffinity(save)) : 0)
 
 /** 欄ごとの項目 */
 export function categoryEntries(save: SaveData, category: CategoryId): Entry[] {
+  if (category === 'hard') {
+    return [
+      ...categoryEntries(save, 'gear').map(entry => `hard:${entry.id}`),
+      ...BOSS_IDS.map((_, i) => `hard:win:${i + 1}`), 'hard:origin-moth',
+    ].map(id => ({ id, got: isSeen(save, id) }))
+  }
   if (category === 'mobs') {
     return MOB_IDS.map(id => ({ id, got: (save.codex.kills[id] ?? 0) >= 1, count: save.codex.kills[id] ?? 0 }))
   }
@@ -81,8 +88,7 @@ export function categoryEntries(save: SaveData, category: CategoryId): Entry[] {
     return Array.from({ length: FOSSIL_COUNT }, (_, i) => ({ id: `fossil:${i + 1}`, got: save.mine.fossils.includes(i + 1) }))
   }
   if (category === 'pets') {
-    // ペットは 2 匹までで手放せないので、仲間にした枠（1 匹目・2 匹目）ごとに 3 形態。まだ居ない枠は未発見
-    return [0, 1].flatMap(slot => [1, 2, 3].map(form => ({ id: `pet:${slot}:${form}`, got: (save.pets.owned[slot]?.form ?? 0) >= form })))
+    return PET_SPECIES.flatMap(species => [1, 2, 3].map(form => ({ id: `pet:${species}:${form}`, got: save.pets.owned.some(pet => pet.species === species && pet.form >= form) })))
   }
   const master = masterCount(save)
   const scholar = scholarCount(save)
@@ -112,6 +118,7 @@ export function codexRate(save: SaveData): { got: number; total: number; pct: nu
   let got = 0
   let total = 0
   for (const category of CATEGORIES) {
+    if (category === 'hard') continue // ハード欄は別記録。通常の収集報酬の条件を変えない
     const count = categoryCount(save, category)
     const weight = category === 'mobs' ? 1 : 10
     got += count.got * weight
@@ -151,6 +158,7 @@ export function claimable(save: SaveData): Claim[] {
     }
   }
   for (const category of CATEGORIES) {
+    if (category === 'hard') continue
     const id = `cat:${category}`
     const count = categoryCount(save, category)
     if (count.total > 0 && count.got >= count.total && !save.codex.claimed.includes(id)) {
@@ -199,6 +207,11 @@ export function syncCodex(save: SaveData): SaveData {
       continue
     }
     see(codexGearKey(item))
+    if (item.hard === true) {
+      see(`hard:${codexGearKey(item)}`)
+      if (item.set !== undefined) see(`hard:set:${item.set}:${item.slot}`)
+      if (item.unique !== undefined) see(`hard:boss:${item.unique}`)
+    }
     if (item.set !== undefined) see(`set:${item.set}:${item.slot}`)
     if (item.unique !== undefined) see(`boss:${item.unique}`)
   }
@@ -216,6 +229,7 @@ export function syncCodex(save: SaveData): SaveData {
     if (buff.dish !== undefined) see(`dish:${buff.dish}`)
   }
   if (save.farm.last?.quality === 'gold') see(`gold:${save.farm.last.crop}`)
+  if (save.seal.trueBoss.last?.won === true && save.seal.trueBoss.last.loop > 0) see('hard:origin-moth')
 
   return found.length === 0 ? save : { ...save, codex: { ...save.codex, seen: [...save.codex.seen, ...found] } }
 }

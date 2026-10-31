@@ -2,6 +2,7 @@ import type { SaveData, ShareMoment } from '../types'
 import { heroTitle, itemName, rarityName } from './art'
 import { SHARE } from './config'
 import { combatPower } from './gear'
+import { adventurerRank, ADVENTURER_RANKS } from './missions'
 import { T } from './texts'
 import { chapterOf } from './world'
 
@@ -11,6 +12,10 @@ import { chapterOf } from './world'
 
 /** できごとの本文（ハッシュタグの前まで） */
 export function momentText(save: SaveData, moment: ShareMoment): string {
+  return `${momentBody(save, moment)} ${T.shareRank(ADVENTURER_RANKS[adventurerRank(save).rank] ?? 'E')}`
+}
+
+function momentBody(save: SaveData, moment: ShareMoment): string {
   if (moment.kind === 'job') {
     return T.shareJob(T.jobName[moment.job], save.level, combatPower(save))
   }
@@ -30,7 +35,7 @@ export function momentText(save: SaveData, moment: ShareMoment): string {
 
 /** いつでもポストする「いまの状態」の本文 */
 export function statusText(save: SaveData): string {
-  return T.shareStatus(heroTitle(save.job, save.evolution), save.level, combatPower(save), T.stageName(save.stage.chapter, save.stage.stage))
+  return `${T.shareStatus(heroTitle(save.job, save.evolution), save.level, combatPower(save), T.stageName(save.stage.chapter, save.stage.stage))} ${T.shareRank(ADVENTURER_RANKS[adventurerRank(save).rank] ?? 'E')}`
 }
 
 /** X の投稿画面を開く URL。配布ページの URL が決まっていれば付ける */

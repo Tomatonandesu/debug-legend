@@ -3,7 +3,7 @@ import { ART } from './art.generated'
 import type { Figure } from './art'
 import type { Aura } from './art'
 import type { HpBar, HpTimeline } from './battle'
-import { chestArt, itemArt, rarityColor } from './art'
+import { chestArt, itemArt, itemColor } from './art'
 import { BATTLE } from './config'
 import { bob, halfSprite, spritePaths, svg } from './sprite'
 import { T } from './texts'
@@ -527,7 +527,7 @@ export function chestSvg(count: number): string {
 
 /** 装備のアイコン（size × size の枠の中）。装備の絵があれば絵、無ければ枠の文字 */
 function itemIcon(item: Item, x: number, y: number, size: number): string {
-  const color = rarityColor(item.rarity)
+  const color = itemColor(item)
   const frame = `<rect x="${x}" y="${y}" width="${size}" height="${size}" rx="6" fill="#2a2d3d" stroke="${color}" stroke-width="3"/>`
   const art = itemArt(item)
   if (art === undefined) {
@@ -551,10 +551,10 @@ export function slotSvg(slot: SlotId, item: Item | null): string {
       false,
     )
   }
-  const color = rarityColor(item.rarity)
+  const color = itemColor(item)
   const shine =
-    item.rarity >= 3
-      ? `<rect x="2" y="2" width="36" height="36" rx="6" fill="none" stroke="${color}" stroke-width="4" opacity="0.5"><animate attributeName="opacity" values="0.2;0.8;0.2" dur="1.8s" repeatCount="indefinite"/></rect>`
+    item.rarity >= 3 || item.hard === true
+      ? `<rect x="2" y="2" width="36" height="36" rx="6" fill="none" stroke="${item.hard === true ? '#ff453a' : color}" stroke-width="4" opacity="0.5"><animate attributeName="opacity" values="0.2;0.8;0.2" dur="1.8s" repeatCount="indefinite"/></rect>`
       : ''
 
   return svg(40, 40, itemIcon(item, 2, 2, 36) + shine, false)
@@ -565,7 +565,7 @@ export function slotSvg(slot: SlotId, item: Item | null): string {
  * 新しいドロップのたびに id が変わって SVG が変わるので、そのたびに最初から再生される。
  */
 export function dropSvg(item: Item): string {
-  const color = rarityColor(item.rarity)
+  const color = item.hard === true ? '#ff453a' : itemColor(item)
   const w = 96
   const h = 112
   const chestTop = h - 56

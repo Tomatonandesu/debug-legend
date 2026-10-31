@@ -10,6 +10,8 @@ import {
   chooseFarmSign,
   collectRanchProduct,
   cookRecipe,
+  prepareRecipe,
+  eatStoredDish,
   clearFarmPest,
   expandFarmPlots,
   feedRanchAnimal,
@@ -35,6 +37,7 @@ import {
   SIGN_NAMES,
   animalStatus,
   cookStatus,
+  courseIngredients,
   dishRate,
   farmLevel,
   growable,
@@ -81,6 +84,7 @@ function ingredientText(recipe: Recipe): string {
 }
 
 function recipeEffect(save: SaveData, recipe: Recipe): string {
+  if (recipe.id === 'full-course') return T.farmFullCourse
   if (recipe.stored !== undefined) {
     return T.farmRecipeStored(T.bagItem[recipe.stored] ?? recipe.stored)
   }
@@ -160,13 +164,22 @@ function kitchenSection($: $, els: Els, save: SaveData) {
   const { Box, Button, Text } = els
   const recipes = knownRecipes(save)
   const foods = foodBuffs(save)
+  const course = courseIngredients(save).map(index => ({ id: save.dishes[index]!.id, quality: save.dishes[index]!.quality }))
 
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
         <Text bold>{T.farmKitchenTitle}</Text>
-        <Text>{T.farmFoodSlotCount(foods.length)}</Text>
-        {foods.length === 0 ? <Text dimColor>{T.farmActiveFoodNone}</Text> : foods.map(buff => <Text key={`food-${buff.dish}`}>{activeFoodLine(save, buff)}</Text>)}
+        <Text>{T.farmFoodSlotCount(new Set(foods.map(buff => buff.dish)).size)}</Text>
+        {foods.length === 0 ? <Text dimColor>{T.farmActiveFoodNone}</Text> : foods.map(buff => <Text key={`food-${buff.dish}-${buff.kind}`}>{activeFoodLine(save, buff)}</Text>)}
+      </Box>
+      <Box flexDirection="column">
+        <Text bold>{T.farmStoredDishes}</Text>
+        {save.dishes.map(({ id, quality, count }, index) => <Box key={`stored-${index}`} flexDirection="row" gap={1}>
+          <Text>{recipeName(id)} ×{count}（×{quality}）</Text>
+          <Button key={`eat-dish-${index}`} label={T.farmEatDish} onPress={() => eatStoredDish($, index, { id, quality })} />
+        </Box>)}
+        <Text dimColor>{T.farmCourseIngredients(course.map(dish => recipeName(dish.id)).join('・') || '—')}</Text>
       </Box>
       <Box flexDirection="column">
         <Text bold>{T.farmRecipesTitle}</Text>
@@ -185,7 +198,8 @@ function kitchenSection($: $, els: Els, save: SaveData) {
               <Text bold>{name}</Text>
               <Text dimColor>{T.farmMaterials(ingredientText(recipe))}</Text>
               <Text>{recipeEffect(save, recipe)}</Text>
-              {status === 'ok' ? <Button key={`farm-cook-${recipe.id}`} label={`${T.farmCook}: ${name}`} variant="primary" onPress={() => cookRecipe($, recipe.id)} /> : <Text dimColor>{statusLine}</Text>}
+              {status === 'ok' ? <Button key={`farm-cook-${recipe.id}`} label={`${T.farmCook}: ${name}`} variant="primary" onPress={() => cookRecipe($, recipe.id, course)} /> : <Text dimColor>{statusLine}</Text>}
+              {recipe.buff !== undefined || recipe.stored !== undefined ? <Button key={`farm-store-${recipe.id}`} label={T.farmStoreDish(name)} onPress={() => prepareRecipe($, recipe.id)} /> : null}
             </Box>
           )
         })}
@@ -215,6 +229,7 @@ function bigFarmSection($: $, els: Els, save: SaveData) {
     <Box flexDirection="column" gap={1} borderStyle="round" paddingX={1}>
       <Text bold>{sign === undefined ? T.bfTitle : T.bfTitleNamed(sign)}</Text>
       <Text dimColor>{T.bfMaterials(woodHave, ironHave)}</Text>
+      {Object.keys(save.bag).filter(id => id.startsWith('decoration-') && (save.bag[id] ?? 0) > 0).map(id => <Text key={id}>{T.bagItem[id] ?? id}</Text>)}
       {expansion === undefined ? (
         <Text dimColor>{T.bfExpandMax}</Text>
       ) : level >= expansion.lv && canAfford(Math.round(p * expansion.gold), expansion.wood, expansion.iron) ? (
@@ -225,10 +240,10 @@ function bigFarmSection($: $, els: Els, save: SaveData) {
       {save.farm.greenhouse.length > 0 ? (
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
           <Text dimColor>{T.bfGreenhouseBuilt(GREENHOUSE_PLOTS)}</Text>
-          {save.gold >= Math.round(p * FLOWER_SEED_PRICE) ? (
-            <Button key="bf-flower-seed" label={T.bfFlowerSeed(T.gold(Math.round(p * FLOWER_SEED_PRICE)), save.bag['seed-flower'] ?? 0)} onPress={() => buyGreenhouseFlowerSeed($)} />
+          {save.wallet.stars >= FLOWER_SEED_PRICE ? (
+            <Button key="bf-flower-seed" label={T.bfFlowerSeed(`✦${FLOWER_SEED_PRICE}`, save.bag['seed-flower'] ?? 0)} onPress={() => buyGreenhouseFlowerSeed($)} />
           ) : (
-            <Text dimColor>{T.bfFlowerSeed(T.gold(Math.round(p * FLOWER_SEED_PRICE)), save.bag['seed-flower'] ?? 0)}</Text>
+            <Text dimColor>{T.bfFlowerSeed(`✦${FLOWER_SEED_PRICE}`, save.bag['seed-flower'] ?? 0)}</Text>
           )}
         </Box>
       ) : level >= GREENHOUSE_COST.lv && canAfford(Math.round(p * GREENHOUSE_COST.gold), GREENHOUSE_COST.wood, GREENHOUSE_COST.iron) ? (

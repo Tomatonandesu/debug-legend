@@ -5,6 +5,7 @@ import { applyGoldenHand, random, judge, rollItem, setCount } from './gear'
 import { addExp } from './level'
 import { petBattleEffects } from './pets'
 import { hasPsychicNode, psychicGoldReward, psychicStarReward } from './psychic'
+import { buffRate } from './buffs'
 
 // 鉱山（3 日目、docs/DAILY.md の 4 章）。$ を使わない純粋な関数。
 // 階の作り・マスの中身・当たりは、セーブの種（createdAt）と階の番号・マスの番号から決まる（同じセーブなら、どのセッションでも同じ）。
@@ -630,9 +631,24 @@ function applyPrize(input: SaveData, index: number, prize: MineHaul, now: number
 
 /** マス index を開ける。defer なら、賞品はマスに置いておく（もう一度押してもらう）。そうでなければすぐもらう（マスはもう掘れる状態になっている前提） */
 function openCell(input: SaveData, index: number, now: number, dig: Dig, defer = false): SaveData {
-  const cell = input.mine.grid[index]
+  let cell = input.mine.grid[index]
   if (cell === undefined || (cell.open && cell.alive !== true)) {
     return input
+  }
+  // 中身を確定するときだけ幸運を適用し、賞品は既存の prize に保存する。
+  // 宝石・宝箱の元の重みに rate 倍を足し、そのぶん土から振り替える。
+  // 階の再生成にはバフを使わないので、効果切れや階の行き来で掘った跡は変わらない。
+  const fortune = buffRate(input, 'fortune')
+  if (!cell.open && cell.kind === 'dirt' && fortune > 0) {
+    const dirtWeight = input.mine.floor >= 11 ? 26 : 40
+    const gemBonus = (3 + layerOf(input.mine.floor) * 0.6) * fortune / dirtWeight
+    const chestBonus = 4 * fortune / dirtWeight
+    const draw = cellRoll(input, index)('fortune')
+    const kind = draw < gemBonus ? 'gem' : draw < gemBonus + chestBonus ? 'chest' : 'dirt'
+    if (kind !== cell.kind) {
+      cell = { ...cell, kind }
+      input = setCell(input, index, cell)
+    }
   }
   // 画面から掘って閉じた魔物が出てきたら、まだ戦わない（生きた魔物として残す。もう一度押すと戦う）
   if (defer && cell.kind === 'monster' && !cell.open) {

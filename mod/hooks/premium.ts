@@ -1,11 +1,16 @@
 import type { FeatureId, SaveData } from '../types'
 import { addItem, isUnlocked, priceUnit, READY } from './calendar'
 import { itemPower, judge, random, rollItem } from './gear'
+import { weekKey } from './shop'
+import { canBuyPetEgg } from './pets'
 
 // 上級商店と闇市。セーブと日付から品を決める純粋な計算。
 
 type PremiumGood = { id: string; price: number; limit: number; needs: FeatureId; oneTime?: boolean }
-export type PremiumSlot = { good: PremiumGood; price: number; left: number; isSale: boolean }
+export type PremiumSlot = { good: PremiumGood; price: number; left: number; isSale: boolean; group: 'weekly' | 'always' }
+
+/** 限定の飾りは既存の文字表示だけで飾る紋章。新しい絵・能力値は付けない */
+export const PREMIUM_DECOR = ['decoration-rune', 'decoration-branch', 'decoration-gate', 'decoration-star', 'decoration-sigil', 'decoration-circuit'] as const
 
 const ALWAYS: readonly PremiumGood[] = [
   { id: 'box-legend', price: 80, limit: 5, needs: 'premium' },
@@ -23,7 +28,7 @@ const ROTATING: readonly PremiumGood[] = [
   { id: 'collar-box', price: 100, limit: 2, needs: 'pet' },
   { id: 'contract', price: 200, limit: 1, needs: 'expedition', oneTime: true },
   { id: 'soul-lamp', price: 500, limit: 1, needs: 'codex', oneTime: true },
-  // 限定の飾り（decoration）は、置く場所を作るまで売らない。もう買った人の持ち物（bag.decoration）はそのまま残す
+  ...PREMIUM_DECOR.map(id => ({ id, price: 30, limit: 1, needs: 'bigfarm' as const, oneTime: true })),
 ]
 
 const MARKET_ITEMS = ['mystery-box', 'time-sand', 'sealed-shard', 'curse-gear', 'stolen-pick'] as const
@@ -49,15 +54,11 @@ function localDate(now: number): string {
 
 /** ISO 週（月曜はじまり）。 */
 export function premiumWeekKey(day: string): string {
-  const date = new Date(`${day}T00:00:00Z`)
-  if (Number.isNaN(date.getTime())) return ''
-  const monday = new Date(date.getTime() - ((date.getUTCDay() + 6) % 7) * 86_400_000)
-  return monday.toISOString().slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? weekKey(day) : ''
 }
 
 function available(save: SaveData, good: PremiumGood): boolean {
-  const petPairReady = READY.has('pet2') && isUnlocked(save, 'pet2')
-  return READY.has(good.needs) && isUnlocked(save, good.needs) && !(good.id === 'egg' && save.pets.owned.length > 0 && !petPairReady)
+  return READY.has(good.needs) && isUnlocked(save, good.needs) && (good.id !== 'egg' || canBuyPetEgg(save))
 }
 
 function ordered<T extends { id: string }>(goods: readonly T[], seed: string): T[] {
@@ -84,7 +85,7 @@ function weekend(now: number): boolean {
 export function premiumStock(save: SaveData, day: string, now: number): PremiumSlot[] {
   const week = premiumWeekKey(day)
   if (!READY.has('premium') || !isUnlocked(save, 'premium')) return []
-  const rotating = ordered(ROTATING.filter(good => available(save, good)), `${save.createdAt}:${week}`)
+  const rotating = ordered(ROTATING.filter(good => available(save, good)), `${save.createdAt}:${week}`).slice(0, 8)
   const goods = [...rotating, ...ALWAYS.filter(good => available(save, good))]
   const sale = weekend(now) ? saleId(save, week, goods) : undefined
 
@@ -93,7 +94,7 @@ export function premiumStock(save: SaveData, day: string, now: number): PremiumS
     const fullPrice = good.price
     const price = isSale ? Math.max(1, Math.round(fullPrice * 0.7)) : fullPrice
     const bought = premiumBought(save, good.id, week, good.oneTime === true)
-    return { good, price, left: Math.max(0, good.limit - bought), isSale }
+    return { good, price, left: Math.max(0, good.limit - bought), isSale, group: rotating.includes(good) ? 'weekly' : 'always' }
   })
 }
 
@@ -107,6 +108,7 @@ function premiumForWeek(save: SaveData, week: string): SaveData['premium'] {
 export function buyPremium(save: SaveData, day: string, now: number, id: string): SaveData | undefined {
   const slot = premiumStock(save, day, now).find(item => item.good.id === id)
   if (slot === undefined || slot.left < 1 || save.wallet.stars < slot.price) return undefined
+  if ((save.bag[id] ?? 0) >= 9_999) return undefined
   const week = premiumWeekKey(day)
   const premium = premiumForWeek(save, week)
   const key = slot.good.oneTime === true ? `ever:${id}` : id

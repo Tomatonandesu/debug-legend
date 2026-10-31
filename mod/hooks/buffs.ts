@@ -8,6 +8,8 @@ export const BUFF_KINDS: readonly BuffKind[] = ['power', 'exp', 'gold', 'midas',
 
 /** 料理のバフが同時に効ける数（違う種類どうし。薬とは別に数える） */
 export const FOOD_SLOTS = 2
+/** 薬4種 + ミダス + フルコース3効果 + 別の料理1効果。 */
+export const SAVE_BUFF_LIMIT = 9
 
 /** 料理のバフか */
 export const isFood = (buff: Buff): boolean => buff.dish !== undefined
@@ -82,7 +84,7 @@ export function addFood(save: SaveData, dish: string, kind: BuffKind, rate: numb
   if (old !== undefined && old.rate > rate + 1e-9) {
     return undefined
   }
-  if (old === undefined && foods.length >= FOOD_SLOTS) {
+  if (old === undefined && new Set(foods.map(buff => buff.dish)).size >= FOOD_SLOTS) {
     return undefined
   }
   const isSame = old !== undefined && Math.abs(old.rate - rate) < 1e-9

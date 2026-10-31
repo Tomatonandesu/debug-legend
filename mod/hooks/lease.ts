@@ -4,6 +4,9 @@ import { TIME } from './config'
 import { applyTime } from './fuel'
 import type { TimeGain } from './fuel'
 import { emptyReport } from './battle'
+import { countReport } from './missions'
+import { awardBossStars } from './premium'
+import { preservePetProduction } from './goldmine'
 
 // 時間を進める役（1 つのセッションだけ）と、作業中の印（どのセッションの作業でも 3 倍速）。
 // セーブ（$.store）は、同じパソコンで動いているセッションみんなで 1 つ。前は、それぞれのセッションが自分の 10 秒のタイマーで
@@ -51,6 +54,7 @@ export function leaseFor(me: string, now: number, isWatching: boolean): TimeLeas
  * ほかのセッションは書かずに画面に出す（同じ計算なので、どのセッションで見ても同じになる）。
  */
 export function advanceShared(input: SaveData, now: number): { save: SaveData; gain: TimeGain } {
+  input = { ...input, lastTickAt: Math.max(input.lastTickAt, input.settledTickAt) }
   const elapsed = now - input.lastTickAt
   if (!(elapsed > 0) || elapsed >= TIME.offlineThresholdMs) {
     // 時間が進んでいない、または間があいた（オフライン報酬、作業中の速さは無し）
@@ -77,6 +81,13 @@ export function advanceShared(input: SaveData, now: number): { save: SaveData; g
   report.seconds = seconds
 
   return { save, gain: { seconds, offlineMs: 0, report } }
+}
+
+/** 保存する時間進行。表示だけの予測と違い、報酬・日課・ハードの記録も一緒に反映する。 */
+export function advanceSettled(input: SaveData, now: number, day: string): { save: SaveData; gain: TimeGain } {
+  const advanced = advanceShared(input, now)
+  const rewarded = awardBossStars(preservePetProduction(input, advanced.save, now), advanced.gain.report.bossWins)
+  return { ...advanced, save: countReport(rewarded, advanced.gain.report, day) }
 }
 
 /** 終わった作業中の印を片づける（時間をそこまで進めたあと） */

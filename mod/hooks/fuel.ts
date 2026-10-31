@@ -116,7 +116,8 @@ function addAway(old: AwayReport | null, report: BattleReport, ms: number, now: 
  * 間があきすぎていたら「オフライン」として最大 8 時間分（作業中の加速なし）。長く閉じていたらまとめを away に残す。
  */
 export function applyTime(input: SaveData, now: number, isWorking: boolean): { save: SaveData; gain: TimeGain } {
-  const elapsed = now - input.lastTickAt
+  const from = Math.max(input.lastTickAt, input.settledTickAt)
+  const elapsed = now - from
   if (!(elapsed > 0)) {
     return { save: { ...input, lastTickAt: Math.max(input.lastTickAt, now) }, gain: { seconds: 0, offlineMs: 0, report: emptyReport() } }
   }
@@ -125,7 +126,7 @@ export function applyTime(input: SaveData, now: number, isWorking: boolean): { s
   const rate = TIME.battleSpeed * (isWorking && !isOffline ? TIME.workingMultiplier : 1)
   const seconds = (counted / 1000) * rate
   const offlineMs = isOffline ? counted : 0
-  const fought = fight({ ...input, lastTickAt: now, totals: { ...input.totals, offlineMs: input.totals.offlineMs + offlineMs } }, seconds, now)
+  const fought = fight({ ...input, lastTickAt: now, settledTickAt: now, totals: { ...input.totals, offlineMs: input.totals.offlineMs + offlineMs } }, seconds, now)
   const save = offlineMs >= AWAY_NOTICE_MS ? { ...fought.save, away: addAway(fought.save.away, fought.report, offlineMs, now) } : fought.save
 
   return { save, gain: { seconds, offlineMs, report: fought.report } }

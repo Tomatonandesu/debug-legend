@@ -3,30 +3,28 @@ import type { Register } from 'claude-code'
 
 import type { BattleReport, SaveData } from '../types'
 import { syncCodex } from './codex'
-import { announceReport, autoLamp, openPane, withBossShare } from './actions'
+import { announceReport, answerCompanionEgg, autoLamp, openPane, withBossShare } from './actions'
 import { stopBgm, syncBgm } from './audio'
 import { detectWindows } from './winsound'
 import { runCheat, runDebugLog, runExport, runImport, runSound, runSummary } from './commands'
-import { DEV_CHEATS, SOUND, TIME, TRAVEL } from './config'
-import { secondsToNextEvent, travelLeft } from './battle'
+import { DEV_CHEATS, SOUND, TIME } from './config'
+import { secondsToNextEvent, travelLeft, travelSeconds } from './battle'
 import { BUILD } from './build.generated'
 import { buildLabel, cheatsAllowed } from './build'
 import { clock, flushLog, note, setLogSession } from './debuglog'
-import { advanceShared, canLead, isBusyAt, leaseFor, markBusy, pruneBusy } from './lease'
+import { advanceShared, advanceSettled, canLead, isBusyAt, leaseFor, markBusy, pruneBusy } from './lease'
 import { isPaneShown } from './audio'
 import { BOSS_STAGE, stageGroup } from './world'
 import { applyToolSuccess, applyTurn, dayKey } from './fuel'
 import type { PlayDay } from './calendar'
-import { count as countUp, countReport } from './missions'
+import { count as countUp } from './missions'
 import { accruePicks, autoMine } from './mine'
 import { READY, featureDay, recordPlay } from './calendar'
 import type { $ } from './persist'
 import { background, load, mutate, restoreLost, serial, setWriter, show, store, track } from './persist'
 import { T, setDetectedLanguage, useLanguage } from './texts'
 import { tickFarm, waterAll } from './farm'
-import { tickGoldMine } from './goldmine'
-import { answerEgg } from './pets'
-import { awardBossStars } from './premium'
+import { preservePetProduction, tickGoldMine } from './goldmine'
 import { drawBand, drawPane } from './screens'
 
 // デバッグ伝説: 燃料フック（回答・ツール・トークン・時間）、帯・サイド画面・ステータスライン、スラッシュコマンド。
@@ -96,11 +94,11 @@ function noteTravel($: $, save: SaveData, speed: number): void {
   if (travel <= 0) {
     return
   }
-  const startedAt = save.lastTickAt - Math.round(((TRAVEL.seconds - travel) / speed) * 1000)
-  const key = `${save.stage.chapter}-${save.stage.stage}@${Math.round((save.battleSeconds - (TRAVEL.seconds - travel)) * 10)}`
+  const startedAt = save.lastTickAt - Math.round(((travelSeconds(save) - travel) / speed) * 1000)
+  const key = `${save.stage.chapter}-${save.stage.stage}@${Math.round((save.battleSeconds - (travelSeconds(save) - travel)) * 10)}`
   if (key !== travelNoted) {
     travelNoted = key
-    note(startedAt, 'travel', `移動の始まり → ${save.stage.chapter}-${save.stage.stage}（${TRAVEL.seconds}s・×${speed}、着くのは ${Math.round((TRAVEL.seconds / speed) * 1000)}ms 後）`)
+    note(startedAt, 'travel', `移動の始まり → ${save.stage.chapter}-${save.stage.stage}（${travelSeconds(save)}s・×${speed}、着くのは ${Math.round((travelSeconds(save) / speed) * 1000)}ms 後）`)
   }
   const wait = Math.max(0, Math.round((travel / speed) * 1000))
   travelEnd = $.clock.after(wait, () =>
@@ -156,15 +154,13 @@ async function advanceTime($: $) {
     }
     changed = markBusy(changed, me, now, isWorking)
     if (isLeader) {
-      const advanced = advanceShared(changed, now)
-      // 倒した数・ボス戦の回数を数える（日課・週課・実績。セーブの進みといっしょに書くので、ずれない）
-      const rewarded = awardBossStars(advanced.save, advanced.gain.report.bossWins)
-      const counted = countReport(rewarded, advanced.gain.report, day)
+      const advanced = advanceSettled(changed, now, day)
       // 自動採掘（10 分ごとに最大 10 回。閉じていた分も 8 時間まで追いつく）。叩いた回数・降りた階も数える
-      const mined = autoMine(counted, now)
+      const mined = autoMine(advanced.save, now)
       const minedCounted = mined.hits > 0 || mined.stairs > 0 ? countUp(countUp(mined.save, 'mineHits', mined.hits, day), 'stairs', mined.stairs, day) : mined.save
       // 金山銀山の「作業中だった時間」を足す・スプリンクラーとペットの小屋（大農場）。作業中の印が消える前に数える
-      const ticked = tickFarm(tickGoldMine(minedCounted, now), now, day)
+      const mineTicked = tickGoldMine(minedCounted, now)
+      const ticked = preservePetProduction(mineTicked, tickFarm(mineTicked, now, day), now)
       const next = withBossShare(pruneBusy({ ...syncCodex(ticked), clock: leaseFor(me, now, isWatching) }), advanced.gain.report, now)
       await store($, next)
       lastWrite = next.lastTickAt
@@ -317,7 +313,10 @@ export const register: Register = on => {
       return result
     }
     const usage = e.usage
-    const tokens = usage === undefined ? 0 : usage.input_tokens + usage.output_tokens + usage.cache_creation_input_tokens
+    const tokenCount = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value)) : 0
+    const tokens = typeof usage === 'object' && usage !== null && !Array.isArray(usage)
+      ? Math.min(Number.MAX_SAFE_INTEGER, tokenCount(usage.input_tokens) + tokenCount(usage.output_tokens) + tokenCount(usage.cache_creation_input_tokens))
+      : 0
     background(
       (async () => {
         // 作業中の印を閉じる（ここまで 3 倍速）。ふだんの速さに戻ったので、次のできごとの予約を計算し直す
@@ -327,7 +326,7 @@ export const register: Register = on => {
           // 今日はじめての回答なら、遊んだ日 +1・ログインスタンプ・施設の解放（docs/DAILY.md）
           let played: PlayDay | undefined
           const save = await mutate($, (current, now, day) => {
-            const answered = answerEgg(countUp(applyTurn(current, day, tokens).save, 'answers', 1, day))
+            const answered = answerCompanionEgg(countUp(applyTurn(current, day, tokens).save, 'answers', 1, day), now, day)
             played = recordPlay(answered, day)
             return waterAll(played.save, now)
           })

@@ -70,6 +70,8 @@ export type Item = {
   goldTrim?: boolean
   /** 闇市の呪い: 攻撃力が上がり、HP が下がる */
   curse?: boolean
+  /** ハード周回で手に入れた装備。周回を始める前の装備には付けない */
+  hard?: boolean
 }
 
 /** ランプを叩いた結果 */
@@ -336,11 +338,11 @@ export type Pet = {
 export type PetEgg = { species: PetSpecies; answers: number }
 export type PetsState = {
   owned: Pet[]
-  /** 戦闘に出す仲間（13 日目以降を見越して 2 枠） */
+  /** 戦闘枠の ID（解放前 0、6〜12 日目 1、13 日目以降 2。遠征中も枠を保持） */
   active: string[]
   egg: PetEgg | null
   pats: { day: string; count: number }
-  /** 13 日目の無料の卵（新しい 3 種から選ぶ）をもう選んだ */
+  /** 13 日目の無料の卵、または全対象種所持時の ✦100 を受領済み */
   freeEgg: boolean
 }
 
@@ -415,6 +417,11 @@ export type GoldMineState = {
   settledAt: number
   settledGold: number[]
   settledSilver: number[]
+  /** 回収で渡した整数分を除く、線路・鉱種ごとの端数（個数、0 以上 1 未満）。強化しても倍率を掛け直さない */
+  goldRemainders: number[]
+  silverRemainders: number[]
+  /** 銀鉱の錬金で、まだ 1 個になっていない変換分 */
+  alchemyFraction: number
   /** 直した脱線（イベントの印 → 直した時刻）、拾った金の塊（イベントの印）。古いものは消える */
   fixed: Record<string, number>
   nuggets: string[]
@@ -494,10 +501,12 @@ export type BusyMark = {
 
 /** $.store に保存するセーブデータ（版 19） */
 export type SaveData = {
-  version: 23
+  version: 27
   createdAt: number
   /** 最後に時間の進行を計算した時刻 */
   lastTickAt: number
+  /** 報酬を精算した時刻の最大値。時計を戻しても、この時刻までは再び数えない */
+  settledTickAt: number
   level: number
   exp: number
   gold: number
@@ -559,6 +568,8 @@ export type SaveData = {
   calendar: Calendar
   /** 素材・消耗品の持ち物（アイテム ID → 個数。装備は equipment / pending） */
   bag: Record<string, number>
+  /** 保存した料理。品質倍率を残し、フルコースにも使う（版 25） */
+  dishes: { id: string; quality: number; count: number }[]
   /** 星のかけら（上級商店の通貨）と超能力ポイント */
   wallet: { stars: number; psi: number }
   /** 持っている称号と、付けている称号 */

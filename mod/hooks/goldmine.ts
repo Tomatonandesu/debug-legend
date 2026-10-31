@@ -1,5 +1,5 @@
 import type { GoldMineState, SaveData } from '../types'
-import { READY, addItem, isUnlocked, priceUnit } from './calendar'
+import { BAG_CAP, READY, addItem, isUnlocked, priceUnit } from './calendar'
 import { dayStartAt, nextDayStart } from './farm'
 import type { OffsetAt } from './farm'
 import { LEASE_MS } from './lease'
@@ -68,6 +68,9 @@ export const emptyGoldMine = (): GoldMineState => ({
   settledAt: 0,
   settledGold: [],
   settledSilver: [],
+  goldRemainders: [],
+  silverRemainders: [],
+  alchemyFraction: 0,
   fixed: {},
   nuggets: [],
   boostUntil: 0,
@@ -306,7 +309,7 @@ export function productionHours(
   return total / HOUR
 }
 
-export type LineView = { kind: Kind; index: number; amount: number; cap: number; isFull: boolean; isDerailed: boolean }
+export type LineView = { kind: Kind; index: number; amount: number; remainder: number; cap: number; isFull: boolean; isDerailed: boolean }
 export type MineView = {
   lines: LineView[]
   gold: number
@@ -372,7 +375,7 @@ export function goldMineView(save: SaveData, now: number): MineView {
   const lines: LineView[] = []
   const goldRate = rateOf(save, 'gold')
   const silverRate = rateOf(save, 'silver')
-  if (g.collectedAt > 0 && now > g.collectedAt) {
+  if (g.collectedAt > 0 && now >= g.collectedAt) {
     const from = settleStart(g)
     const to = settleEnd(g, now)
     const meter = lineHoursMeter(save, from, to)
@@ -384,14 +387,18 @@ export function goldMineView(save: SaveData, now: number): MineView {
         const { hours: fresh, isDerailed } = meter(kind, index)
         // 確定した分 + 確定した時刻からいままで。上限（容量）は合わせた量にかける
         const hours = settledOf(g, kind, index) + fresh
-        const amount = Math.min(cap, Math.floor(rate * hours))
-        lines.push({ kind, index, amount, cap, isFull: amount >= cap, isDerailed })
+        const carried = (kind === 'gold' ? g.goldRemainders : g.silverRemainders)[index] ?? 0
+        const total = Math.min(cap, rate * hours + carried)
+        // 小数を足した結果の微小な誤差で、ちょうど 1 個に達した分を取り残さない。
+        const amount = Math.floor(total + 1e-9)
+        const remainder = Math.max(0, total - amount)
+        lines.push({ kind, index, amount, remainder, cap, isFull: amount >= cap, isDerailed })
       }
     }
   } else {
     for (const kind of ['gold', 'silver'] as const) {
       for (let index = 0; index < linesOf(save, kind); index += 1) {
-        lines.push({ kind, index, amount: 0, cap: capOf(save, kind), isFull: false, isDerailed: false })
+        lines.push({ kind, index, amount: 0, remainder: 0, cap: capOf(save, kind), isFull: false, isDerailed: false })
       }
     }
   }
@@ -432,16 +439,37 @@ const patch = (save: SaveData, change: Partial<GoldMineState>): SaveData => ({ .
 
 /** 回収する（金鉱・銀鉱がひとつもたまっていなければ undefined）。超能力の錬金 = 銀鉱の 5% が金鉱になる */
 export function collect(save: SaveData, now: number): SaveData | undefined {
+  return collectMine(save, now, false)
+}
+
+function collectionAmounts(save: SaveData, view: MineView): { gold: number; silver: number; converted: number; alchemyFraction: number } {
+  const conversion = save.goldMine.alchemyFraction + (hasPsychicNode(save, 'fortune-8') ? view.silver * ALCHEMY_RATE : 0)
+  const converted = Math.min(view.silver, Math.floor(conversion + 1e-9))
+  return { gold: view.gold + converted, silver: view.silver - converted, converted, alchemyFraction: Math.max(0, conversion - converted) }
+}
+
+/** 全量を入れられなければ、自動回収とそれに続く編成・設備変更を一緒に断る。 */
+export function canSettlePetProduction(save: SaveData, now: number): boolean {
+  if (!isGoldMineOpen(save) || save.goldMine.collectedAt === 0) return true
+  const { gold, silver } = collectionAmounts(save, goldMineView(save, now))
+  return (save.bag['ore-gold'] ?? 0) + gold <= BAG_CAP && (save.bag['ore-silver'] ?? 0) + silver <= BAG_CAP
+}
+
+/** 強化前は整数分がなくても精算し、端数を旧レートで確定する。 */
+function collectMine(save: SaveData, now: number, allowEmpty: boolean): SaveData | undefined {
   if (!isGoldMineOpen(save) || save.goldMine.collectedAt === 0) {
     return undefined
   }
+  // 時計が戻っている間は、前回確定した端数と集計の基準をそのまま残す。
+  if (now < save.goldMine.collectedAt) {
+    return allowEmpty ? save : undefined
+  }
   const view = goldMineView(save, now)
-  if (view.gold + view.silver < 1) {
+  if (!allowEmpty && view.gold + view.silver < 1) {
     return undefined
   }
-  const converted = hasPsychicNode(save, 'fortune-8') ? Math.floor(view.silver * ALCHEMY_RATE) : 0
-  const gold = view.gold + converted
-  const silver = view.silver - converted
+  if (!canSettlePetProduction(save, now)) return undefined
+  const { gold, silver, converted, alchemyFraction } = collectionAmounts(save, view)
   let next = addItem(save, 'ore-gold', gold)
   next = addItem(next, 'ore-silver', silver)
 
@@ -449,7 +477,10 @@ export function collect(save: SaveData, now: number): SaveData | undefined {
   const g = save.goldMine
   const at = Math.max(now, g.collectedAt, g.workAt, g.settledAt)
 
-  return patch(next, { collectedAt: at, collectWork: workTotal(save, now), workMs: workTotal(save, now), workAt: at, workSpans: [], spansFrom: at, settledAt: at, settledGold: [], settledSilver: [], last: { gold, silver, converted, at: now } })
+  const goldRemainders = view.lines.filter(line => line.kind === 'gold').map(line => line.remainder)
+  const silverRemainders = view.lines.filter(line => line.kind === 'silver').map(line => line.remainder)
+
+  return patch(next, { collectedAt: at, collectWork: workTotal(save, now), workMs: workTotal(save, now), workAt: at, workSpans: [], spansFrom: at, settledAt: at, settledGold: [], settledSilver: [], goldRemainders, silverRemainders, alchemyFraction, last: { gold, silver, converted, at: now } })
 }
 
 /** 脱線を直す（いま止まっている線路があるとき） */
@@ -533,13 +564,14 @@ export function upgradeCost(save: SaveData, kind: Upgrade): UpgradeCost | undefi
  */
 export function upgrade(save: SaveData, kind: Upgrade, now: number): SaveData | undefined {
   const cost = upgradeCost(save, kind)
-  if (!isGoldMineOpen(save) || cost === undefined || save.gold < cost.gold || save.wallet.stars < cost.stars || (cost.ore !== '' && (save.bag[cost.ore] ?? 0) < cost.amount)) {
+  if (!isGoldMineOpen(save) || now < Math.max(save.goldMine.collectedAt, save.goldMine.workAt, save.goldMine.settledAt) || cost === undefined || save.gold < cost.gold || save.wallet.stars < cost.stars || (cost.ore !== '' && (save.bag[cost.ore] ?? 0) < cost.amount)) {
     return undefined
   }
   let next: SaveData = { ...save, gold: save.gold - cost.gold, wallet: { ...save.wallet, stars: save.wallet.stars - cost.stars } }
   if (cost.ore !== '') {
     next = addItem(next, cost.ore, -cost.amount)
   }
+  if (!canSettlePetProduction(next, now)) return undefined
   const g = next.goldMine
   if (kind === 'speed') {
     return settle(next, now, { speed: g.speed + 1 })
@@ -556,9 +588,24 @@ export function upgrade(save: SaveData, kind: Upgrade, now: number): SaveData | 
 
 /** たまっている分を持ち物に入れてから、設定を変える（変えたあとの速さが、過去のたまり分にかからないように） */
 function settle(save: SaveData, now: number, change: Partial<GoldMineState>): SaveData {
-  const collected = collect(save, now) ?? save
+  const collected = collectMine(save, now, true) ?? save
 
   return patch(collected, change)
+}
+
+/** 編成変更前に、設備変更と同じ方式で旧倍率の鉱石・端数を確定する。 */
+export const settlePetProduction = (save: SaveData, now: number): SaveData => settle(save, now, {})
+
+/** 戦闘経験値などで倍率が変わっても、変更前の生産量を新しい倍率で増やさない。回収はしない。 */
+export function preservePetProduction(before: SaveData, after: SaveData, now: number): SaveData {
+  if (!isGoldMineOpen(before) || now < before.goldMine.collectedAt || rateOf(before, 'gold') === rateOf(after, 'gold')) return after
+  const ticked = tickGoldMine(before, now)
+  const view = goldMineView(ticked, now)
+  const lines = (kind: Kind): LineView[] => view.lines.filter(line => line.kind === kind)
+  const rebase = (kind: Kind): number[] => lines(kind).map(line => line.amount / rateOf(after, kind))
+  const settledAt = Math.max(now, ticked.goldMine.settledAt)
+  return { ...after, goldMine: { ...ticked.goldMine, settledAt, settledGold: rebase('gold'), settledSilver: rebase('silver'),
+    goldRemainders: lines('gold').map(line => line.remainder), silverRemainders: lines('silver').map(line => line.remainder) } }
 }
 
 // ---- 使い道 ----

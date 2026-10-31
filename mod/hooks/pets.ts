@@ -2,7 +2,7 @@ import type { JobId, Pet, PetForm, PetSpecies, SaveData } from '../types'
 import { addItem, isUnlocked, READY } from './calendar'
 import { expToNext } from './level'
 import { buffRate } from './buffs'
-import { random, setCount, SLOTS } from './gear'
+import { setCount, SLOTS } from './gear'
 
 // ペットの育成と手伝い。$ を使わない純粋な計算。
 
@@ -35,52 +35,89 @@ const petIsAway = (save: SaveData, id: string): boolean => save.expedition.adven
 
 export const isPetAway = petIsAway
 
+/** 所持数と戦闘枠は別。遠征中の枠も予約したまま数える。 */
+export const PET_CAPACITY = 6
+export const battlePetSlots = (save: SaveData): number =>
+  !READY.has('pet') || !isUnlocked(save, 'pet') ? 0 : READY.has('pet2') && isUnlocked(save, 'pet2') ? 2 : 1
+
+export function canAcquirePet(save: SaveData, species: PetSpecies): boolean {
+  return PET_SPECIES.includes(species) && save.pets.owned.length < PET_CAPACITY && !save.pets.owned.some(pet => pet.species === species)
+}
+
+export function eggSpecies(save: SaveData): PetSpecies[] {
+  if (battlePetSlots(save) === 0 || save.pets.egg !== null || save.pets.owned.length === 0) return []
+  return (battlePetSlots(save) === 2 ? PET_SPECIES : STARTER_SPECIES).filter(species => canAcquirePet(save, species))
+}
+
+/** 共通卵は将来の種も予約する。報酬の卵・かけらには所持上限をかけない。 */
+export function canBuyPetEgg(save: SaveData): boolean {
+  const reserved = save.pets.owned.length + (save.pets.egg === null ? 0 : 1) + (save.bag.egg ?? 0)
+  return battlePetSlots(save) > 0 && reserved < PET_CAPACITY
+}
+
+export const canClaimFreeEgg = (save: SaveData): boolean =>
+  battlePetSlots(save) === 2 && save.pets.owned.length > 0 && !save.pets.freeEgg && save.pets.egg === null
+
+export const freeEggSpecies = (save: SaveData): PetSpecies[] => PAIR_SPECIES.filter(species => canAcquirePet(save, species))
+
+export function claimFreeEggStars(save: SaveData): SaveData | undefined {
+  if (!canClaimFreeEgg(save) || !PAIR_SPECIES.every(species => save.pets.owned.some(pet => pet.species === species))) return undefined
+  return { ...save, wallet: { ...save.wallet, stars: save.wallet.stars + 100 }, pets: { ...save.pets, freeEgg: true } }
+}
+
+export const canExchangePetEgg = (save: SaveData): boolean =>
+  battlePetSlots(save) > 0 && PET_SPECIES.every(species => save.pets.owned.some(pet => pet.species === species)) && (save.bag.egg ?? 0) > 0
+
+export function exchangePetEgg(save: SaveData): SaveData | undefined {
+  if (!canExchangePetEgg(save)) return undefined
+  const next = addItem(save, 'egg', -1)
+  return { ...next, wallet: { ...next.wallet, stars: next.wallet.stars + 25 } }
+}
+
 export function activePets(save: SaveData): Pet[] {
   return save.pets.active
+    .slice(0, battlePetSlots(save))
     .map(id => save.pets.owned.find(pet => pet.id === id))
     .filter((pet): pet is Pet => pet !== undefined && !petIsAway(save, pet.id))
-    .slice(0, 2)
 }
 
 export function chooseEgg(save: SaveData, species: PetSpecies): SaveData | undefined {
-  if (!READY.has('pet') || !isUnlocked(save, 'pet') || !STARTER_SPECIES.includes(species) || save.pets.owned.length > 0 || save.pets.egg !== null) {
+  if (battlePetSlots(save) === 0 || !STARTER_SPECIES.includes(species) || !canAcquirePet(save, species) || save.pets.owned.length > 0 || save.pets.egg !== null) {
     return undefined
   }
 
   return { ...save, pets: { ...save.pets, egg: { species, answers: 0 } } }
 }
 
-/** 13 日目の無料の卵: 1 匹目がいて、2 匹目の枠が空いていて、まだ選んでいないとき、新しい 3 種から 1 つ選ぶ（1 回だけ） */
+/** 無料の卵の権利は、戦闘枠や共通卵の使用とは独立。 */
 export function choosePairEgg(save: SaveData, species: PetSpecies): SaveData | undefined {
-  if (!READY.has('pet2') || !isUnlocked(save, 'pet2') || !PAIR_SPECIES.includes(species) || save.pets.owned.some(pet => pet.species === species) || save.pets.freeEgg || save.pets.owned.length !== 1 || save.pets.egg !== null) {
+  if (!canClaimFreeEgg(save) || !freeEggSpecies(save).includes(species)) {
     return undefined
   }
 
   return { ...save, pets: { ...save.pets, freeEgg: true, egg: { species, answers: 0 } } }
 }
 
-/** 上級商店の卵。まだ持っていない種を選びやすくし、孵化には通常どおり回答 10 回が必要。 */
-export function usePremiumEgg(save: SaveData): SaveData | undefined {
-  if (!READY.has('pet') || !isUnlocked(save, 'pet') || save.pets.owned.length >= 2 || (save.pets.owned.length > 0 && (!READY.has('pet2') || !isUnlocked(save, 'pet2'))) || save.pets.egg !== null || (save.bag.egg ?? 0) < 1) {
-    return undefined
-  }
-  const unowned = PET_SPECIES.filter(species => !save.pets.owned.some(pet => pet.species === species))
-  const candidates = unowned.length > 0 ? unowned : PET_SPECIES
-  const draw = random(save.rng)
-  const species = candidates[Math.floor(draw.value * candidates.length)] ?? 'duck'
+/** 種未指定では利用可能かだけを確認する。消費・種の確定はプレイヤーの選択時だけ。 */
+export function usePremiumEgg(save: SaveData, species?: PetSpecies): SaveData | undefined {
+  const candidates = eggSpecies(save)
+  if ((save.bag.egg ?? 0) < 1 || candidates.length === 0) return undefined
+  if (species === undefined) return save
+  if (!candidates.includes(species)) return undefined
   const spent = addItem(save, 'egg', -1)
-  return { ...spent, rng: draw.state, pets: { ...spent.pets, egg: { species, answers: 0 } } }
+  return { ...spent, pets: { ...spent.pets, egg: { species, answers: 0 } } }
 }
 
 function hatch(save: SaveData, species: PetSpecies): SaveData {
-  if (save.pets.owned.length >= 2) {
-    return { ...save, pets: { ...save.pets, egg: null } }
-  }
-  const id = `pet-${species}-${save.pets.owned.length + 1}`
+  // 旧セーブの卵も消さない。所持済み種・満員の場合は孵化待ちのまま残す。
+  if (!canAcquirePet(save, species)) return save
+  let suffix = save.pets.owned.length + 1
+  while (save.pets.owned.some(pet => pet.id === `pet-${species}-${suffix}`)) suffix += 1
+  const id = `pet-${species}-${suffix}`
   const pet: Pet = { id, species, name: PET_NAMES[species][0] ?? species, level: 1, exp: 0, form: 1, affinity: 0, collar: null }
 
   // 孵ったら、枠が空いていれば戦闘に出る（1 匹目は先頭、2 匹目は 2 つ目の枠）
-  const active = save.pets.active.length < 2 ? [...save.pets.active, id] : save.pets.active.slice(0, 2)
+  const active = save.pets.active.length < battlePetSlots(save) ? [...save.pets.active, id] : save.pets.active
 
   return { ...save, pets: { ...save.pets, owned: [...save.pets.owned, pet], active, egg: null } }
 }
@@ -98,12 +135,11 @@ export function answerEgg(save: SaveData, answers = 1): SaveData {
 
 /** 開発用: 種を指定してすぐ孵す */
 export function cheatHatch(save: SaveData, species: PetSpecies): SaveData {
-  // 2 匹目は、ペット 2 匹目が開いているときだけ
-  if (save.pets.owned.length >= 2 || (save.pets.owned.length === 1 && (!READY.has('pet2') || !isUnlocked(save, 'pet2')))) {
+  if (battlePetSlots(save) === 0 || !(battlePetSlots(save) === 2 ? PET_SPECIES : STARTER_SPECIES).includes(species) || !canAcquirePet(save, species) || save.pets.egg !== null) {
     return save
   }
 
-  return hatch({ ...save, pets: { ...save.pets, egg: null } }, species)
+  return hatch(save, species)
 }
 
 /** 開発用: 先頭のペットの Lv と形態を指定する */
@@ -126,25 +162,29 @@ export function renamePet(save: SaveData, id: string, name: string): SaveData | 
   return { ...save, pets: { ...save.pets, owned: save.pets.owned.map(item => item.id === id ? { ...item, name: clean } : item) } }
 }
 
-/** 戦闘に出す・休ませる（2 匹とも出ているとき、片方を休ませられる。少なくとも 1 匹は出す） */
-export function toggleActivePet(save: SaveData, id: string): SaveData | undefined {
-  if (!save.pets.owned.some(pet => pet.id === id) || petIsAway(save, id)) {
-    return undefined
+/** ID と交換先の現在の ID を照合する。古い画面・再適用でも別の個体を押し出さない。 */
+export function swapActivePet(save: SaveData, incoming: string | null, slot: number, expected: string | null): SaveData | undefined {
+  const active = save.pets.active
+  if (!Number.isInteger(slot) || slot < 0 || slot >= battlePetSlots(save) || slot > active.length || (active[slot] ?? null) !== expected) return undefined
+  if (expected !== null && petIsAway(save, expected)) return undefined
+  if (incoming === null) {
+    if (expected === null) return undefined
+    return { ...save, pets: { ...save.pets, active: active.filter((_, index) => index !== slot) } }
   }
-  if (save.pets.active.includes(id)) {
-    return save.pets.active.length <= 1 ? undefined : { ...save, pets: { ...save.pets, active: save.pets.active.filter(other => other !== id) } }
-  }
+  if (!save.pets.owned.some(pet => pet.id === incoming) || petIsAway(save, incoming) || active.includes(incoming)) return undefined
+  const next = [...active]
+  next[slot] = incoming
+  return { ...save, pets: { ...save.pets, active: next } }
+}
 
-  return { ...save, pets: { ...save.pets, active: [...save.pets.active, id].slice(-2) } }
+/** 旧呼び出し用。追加は空き枠だけ。交換は swapActivePet で明示する。 */
+export function toggleActivePet(save: SaveData, id: string): SaveData | undefined {
+  const slot = save.pets.active.indexOf(id)
+  return slot < 0 ? swapActivePet(save, id, save.pets.active.length, null) : swapActivePet(save, null, slot, id)
 }
 
 export function setActivePet(save: SaveData, id: string): SaveData | undefined {
-  if (!save.pets.owned.some(pet => pet.id === id) || petIsAway(save, id) || save.pets.active[0] === id) {
-    return undefined
-  }
-  const active = [id, ...save.pets.active.filter(other => other !== id)].slice(0, 2)
-
-  return { ...save, pets: { ...save.pets, active } }
+  return swapActivePet(save, id, save.pets.active.length, null)
 }
 
 export function petExpToNext(level: number): number {
@@ -195,7 +235,7 @@ export function shareBattleExp(save: SaveData, heroExp: number): SaveData {
 export function feedPet(save: SaveData, item: 'treat' | 'pet-meal', id?: string): SaveData | undefined {
   const pet = (id === undefined ? activePets(save) : save.pets.owned.filter(item => item.id === id && !petIsAway(save, item.id)))[0]
   const exp = item === 'treat' ? 50 : 200
-  const affinity = item === 'treat' ? 5 : 12
+  const affinity = item === 'treat' ? 10 : 30
   if (pet === undefined || (save.bag[item] ?? 0) < 1) {
     return undefined
   }
@@ -225,7 +265,7 @@ export function patPet(save: SaveData, id: string, day: string): SaveData | unde
 /** Lv45 とユニコードの花で形態 3 に進化 */
 export function evolvePet(save: SaveData, id: string): SaveData | undefined {
   const pet = save.pets.owned.find(item => item.id === id)
-  if (pet === undefined || pet.level < 45 || pet.form >= 3) {
+  if (pet === undefined || petIsAway(save, id) || pet.level < 45 || pet.form >= 3) {
     return undefined
   }
   const flower = ['gold', 'q3', 'q2', 'q1'].map(q => `crop-flower-${q}`).find(item => (save.bag[item] ?? 0) > 0)

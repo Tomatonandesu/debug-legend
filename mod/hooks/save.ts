@@ -1,11 +1,12 @@
 import type { TrueBossLast, TrueBossPhase } from '../types'
 import type { Adventurer, Animal, AwayReport, Buff, BusyMark, Calendar, CodexState, Drop, ExpeditionLunch, ExpeditionTrip, FarmLast, FarmPlot, FarmState, FeatureId, GoldMineState, Item, JobId, MineBossFight, MineCell, MineFloorRecord, MineHaul, MineState, Mission, Missions, Pet, PetEgg, PetForm, PetSpecies, PetsState, PsychicProc, PsychicState, SaveData, SealState, Settings, ShareMoment, ShopState, SlotId, TimeLease } from '../types'
-import { BUFF_KINDS, BUFF_MAX_CHARGES } from './buffs'
+import { BUFF_KINDS, BUFF_MAX_CHARGES, SAVE_BUFF_LIMIT } from './buffs'
+import { heroStats } from './battle'
 import { GOODS, emptyShop } from './shop'
 import { DISH_IDS, MOB_IDS, ORE_IDS, backfillCodex, emptyCodex } from './codex'
 import { FRAY_MAX, emptySeal } from './seal'
 import { BAG_CAP, FEATURES, READY, emptyCalendar } from './calendar'
-import { ANIMALS, CROP_IDS, DECOR, EXPANSIONS, FARM_PLOTS, GREENHOUSE_PLOTS, QUALITIES, SIGN_NAMES, cropOf, emptyFarm } from './farm'
+import { ANIMALS, CROP_IDS, DECOR, EXPANSIONS, FARM_PLOTS, GREENHOUSE_PLOTS, QUALITIES, SIGN_NAMES, cropOf, emptyFarm, recipeOf } from './farm'
 import { CART_BOOST_MS, MAX_LINES, MAX_UPGRADE, WORK_SPAN_LIMIT, emptyGoldMine } from './goldmine'
 import { CELLS, DIARY_COUNT, EVENTS, FOSSIL_COUNT, MAX_PICKAXE, MINE_KINDS, emptyMine, hpOf, isBossFloor } from './mine'
 import { ACHIEVEMENT_IDS, COUNT_CAP, DAILY_COUNT, MISSION_KINDS, WEEKLY_COUNT, emptyMissions } from './missions'
@@ -22,7 +23,7 @@ import { ADVANCED_JOBS, BOSS_STAGE, CHAPTER_COUNT, JOB_IDS, MAX_GROUP } from './
 // 形を変えるときは SAVE_VERSION を上げ、MIGRATIONS に「前の版 → 次の版」の変換を足す。
 
 export const SAVE_KEY = 'save'
-export const SAVE_VERSION = 23
+export const SAVE_VERSION = 27
 export const EXPORT_TAG = 'debug-legend-save'
 /** 書いた変更の印をいくつまで残すか */
 export const APPLIED_LIMIT = 64
@@ -82,6 +83,7 @@ export function newSave(now: number): SaveData {
     version: SAVE_VERSION,
     createdAt: now,
     lastTickAt: now,
+    settledTickAt: now,
     level: 1,
     exp: 0,
     gold: 0,
@@ -113,6 +115,7 @@ export function newSave(now: number): SaveData {
     applied: [],
     calendar: emptyCalendar(),
     bag: {},
+    dishes: [],
     wallet: { stars: 0, psi: 0 },
     titles: { owned: [], current: null },
     shop: emptyShop(),
@@ -215,7 +218,7 @@ const MIGRATIONS: Record<number, (old: Raw, now: number) => Raw> = {
     version: 19,
     goldMine: isObject(old.goldMine) ? old.goldMine : emptyGoldMine(),
     farm: isObject(old.farm) ? { ...emptyFarm(), ...old.farm } : emptyFarm(),
-    pets: isObject(old.pets) ? { ...old.pets, freeEgg: false } : old.pets,
+    pets: isObject(old.pets) ? { ...old.pets, freeEgg: old.pets.freeEgg ?? false } : old.pets,
   }),
   // 版 20（2.0.0）: 図鑑・ボスの魂・封印の魔法陣・真のラスボス・ハード周回。
   // 1.9.0 のコードはこれらを知らずに消してしまうので、版を上げて止まってもらう。図鑑の記録は migrate の最後に分かる範囲で入れる
@@ -241,6 +244,35 @@ const MIGRATIONS: Record<number, (old: Raw, now: number) => Raw> = {
     const deepest = typeof old.mine.deepest === 'number' ? old.mine.deepest : 1
 
     return { ...old, version: 23, mine: { ...old.mine, round: 0, roundBosses: beaten.filter((n): n is number => typeof n === 'number' && n <= deepest), floors: {} } }
+  },
+  // 版 24: 金山銀山の回収・錬金の端数。旧版の未回収の生産は残し、端数は 0 から始める。
+  23: old => ({ ...old, version: 24, goldMine: { ...(isObject(old.goldMine) ? old.goldMine : emptyGoldMine()), goldRemainders: [], silverRemainders: [], alchemyFraction: 0 } }),
+  // 版 25: 保存料理・ハード装備の印・実績の追加。既存の実績、称号、持ち物はそのまま。
+  24: old => {
+    const missions = isObject(old.missions) ? old.missions : {}
+    const counts = isObject(missions.counts) ? missions.counts : {}
+    const updateGoals = (list: unknown, weekly: boolean): unknown => Array.isArray(list) ? list.map(value => {
+      if (!isObject(value) || value.claimed === true) return value
+      // 旧条件で達成済みの週課は、未受取でもそのまま受け取れる。未達成のものと次週からは 8 回。
+      if (weekly && value.id === 'expeditions' && typeof counts.expeditions === 'number'
+        && typeof value.base === 'number' && typeof value.goal === 'number'
+        && counts.expeditions - value.base >= value.goal) return value
+      const goal = weekly ? (value.id === 'expeditions' ? 8 : value.goal) : value.id === 'mineHits' ? 20 : value.id === 'stairs' ? 2 : value.goal
+      return { ...value, goal }
+    }) : list
+    return {
+      ...old, version: 25, dishes: [],
+      missions: { ...missions, counts: { ...counts, expeditionReturns: counts.expeditions ?? 0 }, daily: updateGoals(missions.daily, false), weekly: updateGoals(missions.weekly, true) },
+    }
+  },
+  // 版 26: 宿を含む全所持ペットと孵化中の卵を保持する。無料卵の権利は推測しない。
+  25: old => ({ ...old, version: 26 }),
+  // 版 27: 精算した時刻を保持し、時計の巻き戻しで同じ区間を二度数えない。
+  26: (old, now) => {
+    const missions = isObject(old.missions) ? old.missions : {}
+    const weekly = Array.isArray(missions.weekly) ? missions.weekly.map(mission =>
+      isObject(mission) && mission.id === 'stairs' && mission.claimed !== true ? { ...mission, goal: 5 } : mission) : missions.weekly
+    return { ...old, version: 27, settledTickAt: timestamp(old.lastTickAt, now), missions: { ...missions, weekly } }
   },
 }
 
@@ -268,6 +300,11 @@ const CODEX_IDS = new Set([
   ...CROP_IDS.map(id => `gold:${id}`),
   ...DISH_IDS.map(id => `dish:${id}`),
   ...ORE_IDS.map(id => `ore:${id}`),
+  ...SLOTS.flatMap(slot => Array.from({ length: NAME_VARIANTS }, (_, name) => Array.from({ length: RARITY_COUNT }, (_, rarity) => `hard:gear:${slot}:${name}:${rarity}`)).flat()),
+  ...SET_IDS.flatMap(set => SLOTS.map(slot => `hard:set:${set}:${slot}`)),
+  ...BOSS_GEAR_IDS.map(id => `hard:boss:${id}`),
+  ...Array.from({ length: 10 }, (_, i) => `hard:win:${i + 1}`),
+  'hard:origin-moth',
 ])
 
 /** 最新の版の形に、欠けた値を補い、おかしな値を直す */
@@ -282,11 +319,14 @@ function normalize(raw: Raw, now: number): SaveData {
   const settings = isObject(raw.settings) ? raw.settings : {}
   const wallet = isObject(raw.wallet) ? raw.wallet : {}
   const titles = isObject(raw.titles) ? raw.titles : {}
+  const settledTickAt = timestamp(raw.settledTickAt, Math.min(timestamp(now), timestamp(raw.lastTickAt, base.lastTickAt)))
 
-  return {
+  const save: SaveData = {
     version: SAVE_VERSION,
     createdAt: timestamp(raw.createdAt, base.createdAt),
-    lastTickAt: timestamp(raw.lastTickAt, base.lastTickAt),
+    lastTickAt: Math.min(timestamp(now), timestamp(raw.lastTickAt, base.lastTickAt)),
+    // 通常の巻き戻しでは精算済み時刻を下げない。30 日より先の壊れた値だけ今に戻す。
+    settledTickAt: settledTickAt > timestamp(now) + 30 * 86_400_000 ? timestamp(now) : settledTickAt,
     level: int(raw.level, 1, 1, LEVEL.max),
     exp: num(raw.exp, 0),
     gold: int(raw.gold, 0),
@@ -297,7 +337,7 @@ function normalize(raw: Raw, now: number): SaveData {
       chapter: int(stage.chapter, 1, 1, CHAPTER_COUNT),
       stage: int(stage.stage, 1, 1, BOSS_STAGE),
       kills: num(stage.kills, 0, 0, MAX_GROUP),
-      bossTime: num(stage.bossTime, 0, 0, BALANCE.bossSeconds),
+      bossTime: num(stage.bossTime, 0),
       // 移動していなければ書かない（0 と同じ）
       ...(num(stage.travel, 0, 0, TRAVEL.seconds) > 0 ? { travel: num(stage.travel, 0, 0, TRAVEL.seconds) } : {}),
       // 前にいた面（稼ぎで面がとんだときだけ書いてある）
@@ -355,10 +395,13 @@ function normalize(raw: Raw, now: number): SaveData {
     applied: Array.isArray(raw.applied) ? raw.applied.filter((id): id is string => typeof id === 'string').map(id => id.slice(0, 80)).slice(-APPLIED_LIMIT) : [],
     calendar: calendar(raw.calendar),
     bag: bag(raw.bag),
+    dishes: Array.isArray(raw.dishes) ? raw.dishes.filter(isObject)
+      .filter(dish => typeof dish.id === 'string' && (recipeOf(dish.id)?.buff !== undefined || recipeOf(dish.id)?.stored !== undefined))
+      .slice(0, 60).map(dish => ({ id: dish.id as string, quality: num(dish.quality, 1, 1, 3), count: int(dish.count, 0, 0, 9_999) })).filter(dish => dish.count > 0) : [],
     wallet: { stars: int(wallet.stars, 0), psi: int(wallet.psi, 0) },
     titles: { owned: strings(titles.owned, 64), current: typeof titles.current === 'string' ? titles.current.slice(0, 40) : null },
     shop: shop(raw.shop),
-    buffs: Array.isArray(raw.buffs) ? raw.buffs.map(buff).filter((b): b is Buff => b !== null).slice(0, 8) : [],
+    buffs: Array.isArray(raw.buffs) ? raw.buffs.map(buff).filter((b): b is Buff => b !== null).slice(0, SAVE_BUFF_LIMIT) : [],
     missions: missions(raw.missions),
     mine: mine(raw.mine),
     farm: farm(raw.farm),
@@ -376,6 +419,20 @@ function normalize(raw: Raw, now: number): SaveData {
     seal: seal(raw.seal),
     hard: { loop: isObject(raw.hard) ? int(raw.hard.loop, 0, 0, 99) : 0 },
   }
+  // 遠征だけが参照する架空 ID・二重同行を外す。所持ペットと戦闘枠は動かさない。
+  const traveling = new Set<string>()
+  save.expedition.adventurers = save.expedition.adventurers.map(adventurer => {
+    const trip = adventurer.trip
+    if (trip?.pet === undefined) return adventurer
+    if (save.pets.owned.some(pet => pet.id === trip.pet) && !traveling.has(trip.pet)) {
+      traveling.add(trip.pet)
+      return adventurer
+    }
+    const { pet: _pet, ...withoutPet } = trip
+    return { ...adventurer, trip: withoutPet }
+  })
+  // 装備・ペット・超能力を正規化したあと、戦闘と同じ延長込みの制限で収める。
+  return { ...save, stage: { ...save.stage, bossTime: Math.min(save.stage.bossTime, BALANCE.bossSeconds + heroStats(save).bossTimeBonus) } }
 }
 
 /** 図鑑: 数は 0 以上、発見の印は既知の ID だけ */
@@ -410,7 +467,7 @@ function codex(value: unknown): CodexState {
     kills: counts(raw.kills, /^[a-z-]{1,40}$/, 400, new Set(MOB_IDS)),
     bossWins: chapterCounts(raw.bossWins, false),
     bossBest: chapterCounts(raw.bossBest, true),
-    seen: ids(Array.isArray(raw.seen) ? raw.seen.filter(id => CODEX_IDS.has(id)) : [], 400),
+    seen: ids(Array.isArray(raw.seen) ? raw.seen.filter(id => CODEX_IDS.has(id)) : [], CODEX_IDS.size),
     claimed: ids(raw.claimed, 40),
   }
 }
@@ -495,6 +552,7 @@ function goldMine(value: unknown): GoldMineState {
   // 確定した生産: 古いセーブには無い。無いときは「回収の時刻まで 0」として読む（settledAt = collectedAt）
   const settledAt = Math.max(collectedAt, int(raw.settledAt, collectedAt, 0, 1e15))
   const settledHours = (list: unknown): number[] => (Array.isArray(list) ? list.slice(0, MAX_LINES).map(hours => num(hours, 0, 0, 1e6)) : [])
+  const remainders = (list: unknown, lines: number): number[] => Array.isArray(list) ? list.slice(0, lines).map(value => num(value, 0, 0, 1 - Number.EPSILON)) : []
   const last = isObject(raw.last)
     ? { gold: int(raw.last.gold, 0, 0, 1e9), silver: int(raw.last.silver, 0, 0, 1e9), converted: int(raw.last.converted, 0, 0, 1e9), at: int(raw.last.at, 0, 0, 1e15) }
     : null
@@ -514,6 +572,9 @@ function goldMine(value: unknown): GoldMineState {
     settledAt,
     settledGold: settledHours(raw.settledGold),
     settledSilver: settledHours(raw.settledSilver),
+    goldRemainders: remainders(raw.goldRemainders, int(raw.goldLines, base.goldLines, 1, MAX_LINES)),
+    silverRemainders: remainders(raw.silverRemainders, int(raw.silverLines, base.silverLines, 1, MAX_LINES)),
+    alchemyFraction: num(raw.alchemyFraction, 0, 0, 1 - Number.EPSILON),
     fixed,
     nuggets: strings(raw.nuggets, 16).filter(id => /^\d{1,15}:\d{1,2}$/.test(id)),
     boostUntil: int(raw.boostUntil, 0, 0, 1e15 + CART_BOOST_MS),
@@ -893,7 +954,7 @@ function pets(value: unknown): PetsState {
   const owned: Pet[] = []
   if (Array.isArray(raw.owned)) {
     for (const [index, value] of raw.owned.entries()) {
-      if (!isObject(value) || !isPetSpecies(value.species) || owned.length >= 2) continue
+      if (!isObject(value) || !isPetSpecies(value.species) || owned.length >= PET_SPECIES.length) continue
       const species = value.species
       let id = typeof value.id === 'string' && /^[a-z0-9-]{1,40}$/.test(value.id) ? value.id : `pet-${species}-${index + 1}`
       if (seen.has(id)) id = `pet-${species}-${index + 1}`
@@ -913,7 +974,8 @@ function pets(value: unknown): PetsState {
   const active = strings(raw.active, 2).filter(id => owned.some(pet => pet.id === id))
   let egg: PetEgg | null = null
   const storedEgg = raw.egg
-  if (owned.length < 2 && isObject(storedEgg) && isPetSpecies(storedEgg.species) && !owned.some(pet => pet.species === storedEgg.species)) {
+  // 持っている種の卵は孵れずに止まり、ほかの卵も使えなくなるので外す（数は問わない）
+  if (isObject(storedEgg) && isPetSpecies(storedEgg.species) && !owned.some(pet => pet.species === storedEgg.species)) {
     egg = { species: storedEgg.species, answers: int(storedEgg.answers, 0, 0, 9) }
   }
   const pats = isObject(raw.pats) ? raw.pats : {}
@@ -1099,6 +1161,7 @@ function item(value: unknown, slot?: SlotId): Item | null {
     ...(typeof value.unique === 'string' && /^[a-z0-9-]{1,40}$/.test(value.unique) ? { unique: value.unique } : {}),
     ...(value.goldTrim === undefined ? {} : { goldTrim: flag(value.goldTrim, false) }),
     ...(flag(value.curse, false) ? { curse: true } : {}),
+    ...(flag(value.hard, false) ? { hard: true } : {}),
   }
 }
 
@@ -1153,6 +1216,14 @@ export function migrate(stored: unknown, now: number): SaveData {
   }
 
   const result = normalize(raw, now)
+  // 新しい実績は残っている記録から確実に分かる下限だけ引き継ぐ。未記録の過去の回数は推測しない。
+  if (firstVersion < 25) {
+    const goldenBag = Object.entries(result.bag).filter(([id]) => /^crop-[a-z]+-gold$/.test(id)).reduce((sum, [, n]) => sum + n, 0)
+    const goldenCrops = Math.max(result.missions.counts.goldenCrops ?? 0, goldenBag, result.codex.seen.filter(id => id.startsWith('gold:')).length)
+    const maxPlus = Math.max(result.missions.counts.maxPlus ?? 0, ...[...Object.values(result.equipment), ...result.stash, result.pending].map(item => item?.plus ?? 0))
+    if (goldenCrops > 0) result.missions.counts.goldenCrops = goldenCrops
+    if (maxPlus > 0) result.missions.counts.maxPlus = maxPlus
+  }
   // 図鑑は、版 20 に上げたときに分かる範囲で入れる（倒した章の雑魚・ボス、いまの装備と持ち物）
   const upgraded = firstVersion < 20 ? backfillCodex(result) : result
   // 魂は捧げた分を必ず持っているものとして直す（捧げたあとに魂が消えない）

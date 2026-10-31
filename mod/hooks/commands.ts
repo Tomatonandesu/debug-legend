@@ -14,6 +14,8 @@ import { CROPS, WEATHERS, cheatWeather, growAll, seedId } from './farm'
 import { completeMissions, countReport } from './missions'
 import { cheatFinishTrips } from './expedition'
 import { PET_SPECIES, cheatHatch, cheatPetLevel } from './pets'
+import { advanceSettled } from './lease'
+import { settlePetProduction } from './goldmine'
 import { awardBossStars, cheatOpenBlackMarket } from './premium'
 import { cheatReadyTrueBoss } from './seal'
 import { RARITY_COUNT, SLOTS, itemPower, judge, rollItem } from './gear'
@@ -285,7 +287,10 @@ export async function runCheat($: $, args: string): Promise<string> {
     const input = value.toLocaleLowerCase()
     const species = PET_SPECIES.find(id => id === input || T.petSpeciesName[id]?.toLocaleLowerCase() === input)
     if (species === undefined) return T.cheatHelp
-    await mutate($, save => cheatHatch(save, species))
+    await mutate($, (save, now, day) => {
+      if (cheatHatch(save, species) === save) return save
+      return cheatHatch(settlePetProduction(advanceSettled(save, now, day).save, now), species)
+    })
     return T.cheatEgg(T.petSpeciesName[species] ?? species)
   }
   if (head === 'petlv' && Number.isInteger(n) && n >= 1 && n <= 60) {
@@ -380,7 +385,7 @@ async function cheatMax($: $): Promise<string> {
     ...CROPS.map(crop => `seed ${crop.id} 9999`),
     'gm full',
     'grow',
-    // 持っていない種類から 2 匹まで（同じ種類は孵さない）
+    // 持っていない種類を宿の上限まで（同じ種類は孵さない）
     ...PET_SPECIES.filter(species => !owned.includes(species)).map(species => `egg ${species}`),
     'missions done',
     'missions week',

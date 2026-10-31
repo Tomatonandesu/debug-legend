@@ -3,7 +3,7 @@ import { BALANCE, BATTLE, EVOLUTION, JOBS, JOB_CHANGE, TRAVEL } from './config'
 import { addExp } from './level'
 import { isUnlocked, READY } from './calendar'
 import { buffRate, useCharge } from './buffs'
-import { combatPower, hasBossGear, setCount } from './gear'
+import { combatPower, hasBossGear, psychicInterval, setCount } from './gear'
 import { bossRetrySeconds as psychicRetrySeconds, hasPsychicNode, psychicBossMemory, psychicStarReward, recordPsychicProc, rememberPsychicBoss } from './psychic'
 import { activePets, petBattleEffects, shareBattleExp } from './pets'
 import { BOSS_STAGE, CHAPTER_COUNT, WAVE, farmStage, stageGroup } from './world'
@@ -48,12 +48,15 @@ function recordBossWin(save: SaveData, chapter: number, seconds: number): SaveDa
 /** 移動の残りの秒数（戦闘の秒数） */
 export const travelLeft = (save: SaveData): number => save.stage.travel ?? 0
 
+/** ミスリルの疾風 6 部位: 移動時間を 30% 短縮する。戦闘・予約・表示で共用 */
+export const travelSeconds = (save: SaveData): number => TRAVEL.seconds * (setCount(save, 'mithril-swift') >= 6 ? 0.7 : 1)
+
 /** 次の群れ（ボス）のところに着いたばかりの位置（ここから移動する）。from は前にいた面（面がとぶときだけ書く） */
-const arrive = (chapter: number, stage: number, from?: number) => ({ chapter, stage, kills: 0, bossTime: 0, travel: TRAVEL.seconds, ...(from === undefined ? {} : { from }) })
+const arrive = (save: SaveData, chapter: number, stage: number, from?: number) => ({ chapter, stage, kills: 0, bossTime: 0, travel: travelSeconds(save), ...(from === undefined ? {} : { from }) })
 
 /** 稼ぎの次の面（その章の 1〜9 面から、いまの面以外をランダムに。戦闘の秒数から決めるので、同じセーブなら同じ面） */
 const farmArrive = (save: SaveData) =>
-  arrive(save.stage.chapter, farmStage(save.stage.chapter, save.stage.stage, Math.round(save.battleSeconds * 1000)), save.stage.stage)
+  arrive(save, save.stage.chapter, farmStage(save.stage.chapter, save.stage.stage, Math.round(save.battleSeconds * 1000)), save.stage.stage)
 
 /** ステージの通し番号（第 1 章 1 ステージ目が 0） */
 export const stageIndex = (chapter: number, stage: number): number => (chapter - 1) * BOSS_STAGE + (stage - 1)
@@ -106,7 +109,7 @@ export function heroStats(save: SaveData, pet = petBattleEffects(save)): HeroSta
   const doubleStrike = hasPsychicNode(save, 'mind-7') ? 1.1 : 1
   const hydraArea = hasBossGear(save, 'hydra-armor') ? 1.15 : 1
   const bossAttackRate = hasBossGear(save, 'daemon-helm') ? 1.125 : 1
-  const meteor = hasPsychicNode(save, 'mind-5') ? hit * attackSpeed * doubleStrike * (4 / 45) : 0
+  const meteor = hasPsychicNode(save, 'mind-5') ? hit * attackSpeed * doubleStrike * (4 / psychicInterval(save, 45)) : 0
   const bossDamageRate =
     1 + pet.bossRate + (hasPsychicNode(save, 'mind-8') ? 0.08 : 0) + (hasPsychicNode(save, 'future-9') ? psychicBossMemory(save, save.stage.chapter) * 0.05 : 0)
   const mobDps = hit * attackSpeed * doubleStrike + meteor
@@ -266,7 +269,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
       }
       const need = Math.max(0, outcome.duration - save.stage.bossTime)
       if (left < need) {
-        const meteorCount = hasPsychicNode(save, 'mind-5') ? Math.floor((bossStart + left) / 45) - Math.floor(bossStart / 45) : 0
+        const meteorCount = hasPsychicNode(save, 'mind-5') ? Math.floor((bossStart + left) / psychicInterval(save, 45)) - Math.floor(bossStart / psychicInterval(save, 45)) : 0
         if (meteorCount > 0) save = recordPsychicProc(save, 'mind-5', now, meteorCount)
         save = { ...save, stage: { ...save.stage, bossTime: save.stage.bossTime + left }, battleSeconds: save.battleSeconds + left }
         left = 0
@@ -274,7 +277,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
       }
       left -= need
       // 薬草のおかゆ（ボス戦 1 回だけ HP 回復）は、勝ち負けが決まったら使い切る
-      const meteorCount = hasPsychicNode(save, 'mind-5') ? Math.floor((bossStart + need) / 45) - Math.floor(bossStart / 45) : 0
+      const meteorCount = hasPsychicNode(save, 'mind-5') ? Math.floor((bossStart + need) / psychicInterval(save, 45)) - Math.floor(bossStart / psychicInterval(save, 45)) : 0
       if (meteorCount > 0) save = recordPsychicProc(save, 'mind-5', now, meteorCount)
       save = useCharge({ ...save, battleSeconds: save.battleSeconds + need }, 'heal')
       const n = stageIndex(chapter, BOSS_STAGE)
@@ -298,7 +301,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
           ...save,
           isCleared: isLast,
           // 全部クリアしたら最後の章の 1〜9 面をめぐって稼ぎ続ける
-          stage: isLast ? farmArrive(save) : arrive(chapter + 1, 1),
+          stage: isLast ? farmArrive(save) : arrive(save, chapter + 1, 1),
           boss: { retryAt: null, last: { chapter, won: true, at: now } },
         }
         report.stages += 1
@@ -328,7 +331,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
     report.kills += kills
     save = { ...save, stage: { ...save.stage, kills: save.stage.kills + kills }, battleSeconds: save.battleSeconds + step }
     if (hasPsychicNode(save, 'mind-5')) {
-      const meteorCount = Math.floor(save.battleSeconds / 45) - Math.floor(beforeSeconds / 45)
+      const meteorCount = Math.floor(save.battleSeconds / psychicInterval(save, 45)) - Math.floor(beforeSeconds / psychicInterval(save, 45))
       if (meteorCount > 0) save = recordPsychicProc(save, 'mind-5', now, meteorCount)
     }
     gain(kills * expPerKill(n) * rewardRate, kills * goldPerKill(n) * rewardRate)
@@ -343,7 +346,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
         save = { ...save, stage: farmArrive(save) }
       } else {
         report.stages += 1
-        save = { ...save, stage: isFarmingNow ? arrive(chapter, BOSS_STAGE, stage) : arrive(chapter, stage + 1) }
+        save = { ...save, stage: isFarmingNow ? arrive(save, chapter, BOSS_STAGE, stage) : arrive(save, chapter, stage + 1) }
       }
     } else {
       // 波（3 匹）を倒し終えたところで、ボスに負けて稼いでいて再挑戦の時間が来ていたら、面の最後まで待たずにボスへ向かう
@@ -351,7 +354,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
       if (defeated > beforeDefeated && defeated % WAVE === 0 && !save.isCleared && save.boss.retryAt !== null && save.battleSeconds >= save.boss.retryAt) {
         save = recordKills(save, stageGroup(chapter, stage).slice(0, defeated))
         report.stages += 1
-        save = { ...save, stage: arrive(chapter, BOSS_STAGE, stage) }
+        save = { ...save, stage: arrive(save, chapter, BOSS_STAGE, stage) }
       }
     }
   }
@@ -368,7 +371,7 @@ export function challengeBoss(save: SaveData): SaveData | undefined {
     return undefined
   }
 
-  return { ...save, stage: arrive(save.stage.chapter, BOSS_STAGE, save.stage.stage), boss: { ...save.boss, retryAt: null } }
+  return { ...save, stage: arrive(save, save.stage.chapter, BOSS_STAGE, save.stage.stage), boss: { ...save.boss, retryAt: null } }
 }
 
 /** 転職が解放されているか（Lv が足りているか） */

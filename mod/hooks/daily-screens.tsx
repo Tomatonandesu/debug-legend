@@ -328,11 +328,11 @@ function missionRow($: $, els: Els, save: SaveData, scope: Scope, index: number)
 /** 実績 1 行 */
 function achievementRow($: $, els: Els, save: SaveData, a: Achievement, isReady: boolean) {
   const { Box, Button, Text } = els
-  const name = (T.goalName[a.kind] ?? (() => a.kind))(a.goal)
+  const name = T.achievementName[a.id] ?? (T.goalName[a.kind] ?? (() => a.kind))(a.goal)
 
   return (
     <Box key={`ach-${a.id}`} flexDirection="row" flexWrap="wrap" columnGap={1}>
-      <Text color={isReady ? '#ffd60a' : undefined}>{`${isReady ? '★ ' : '・'}${name}　${T.missionProgress(achievementProgress(save, a), a.goal)}`}</Text>
+      <Text color={isReady ? '#ffd60a' : undefined}>{`${isReady ? '★ ' : '・'}${name} — ${(T.goalName[a.kind] ?? (() => a.kind))(a.goal)}　${T.missionProgress(achievementProgress(save, a), a.goal)}`}</Text>
       <Text dimColor>{`（${rewardText(save, a.reward)}）`}</Text>
       {isReady ? <Button key={`claim-ach-${a.id}`} label={T.missionClaim} variant="primary" onPress={() => claimAchievementReward($, a.id)} /> : null}
     </Box>
