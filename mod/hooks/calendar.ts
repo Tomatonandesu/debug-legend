@@ -1,10 +1,11 @@
 import type { Calendar, FeatureId, SaveData } from '../types'
 import { GEAR, LAMP } from './config'
 import { psychicGoldReward, psychicStarReward } from './psychic'
+import { CHAPTER_COUNT } from './world'
 
 // 毎日の冒険（docs/DAILY.md）: 遊んだ日数・施設の解放・ログインスタンプ・物価。$ を使わない純粋な関数。
 // 「遊んだ日」= その日に Claude が 1 回以上答え終わった日（朝 4 時で日付が変わる。fuel.ts の dayKey）。
-// 休んだ日は数えないので、何日休んでも取り残されない。1 日に開く施設は 1 つだけ。
+// 休んだ日は数えないので、何日休んでも取り残されない。1 日に 1 つ開くが、最後の章のボスを倒していれば全部開く。
 
 /** 施設と、開く日（遊んだ日数）。並びは暦の順 */
 export const FEATURES: readonly { id: FeatureId; day: number }[] = [
@@ -34,13 +35,13 @@ export const featureDay = (id: FeatureId): number => FEATURES.find(f => f.id ===
 export const emptyCalendar = (): Calendar => ({ playedDays: 0, lastPlayedDay: '', firstDay: '', seen: [], stamps: 0, isVeteran: false, gifted: [] })
 
 /** その施設が開いているか（暦は 1 日目から。まだ 1 日も遊んでいなくても見られる） */
-export const isUnlocked = (save: SaveData, id: FeatureId): boolean => id === 'calendar' || save.calendar.playedDays >= featureDay(id)
+export const isUnlocked = (save: SaveData, id: FeatureId): boolean => id === 'calendar' || save.calendar.playedDays >= featureDay(id) || save.beatenBosses.includes(CHAPTER_COUNT)
 
 /** 開いていて、まだ説明を見ていない施設（タブに NEW の印） */
 export const isNew = (save: SaveData, id: FeatureId): boolean => isUnlocked(save, id) && !save.calendar.seen.includes(id)
 
 /** 次に開く施設（全部開いていれば undefined） */
-export const nextFeature = (save: SaveData): { id: FeatureId; day: number } | undefined => FEATURES.find(f => f.day > save.calendar.playedDays)
+export const nextFeature = (save: SaveData): { id: FeatureId; day: number } | undefined => save.beatenBosses.includes(CHAPTER_COUNT) ? undefined : FEATURES.find(f => f.day > save.calendar.playedDays)
 
 /** 説明のあとの最初の贈り物（施設ごとに 1 回だけ） */
 export const FIRST_GIFTS: Partial<Record<FeatureId, readonly Reward[]>> = {

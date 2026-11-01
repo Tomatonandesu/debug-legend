@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 
 import type { BattleReport, SaveData } from '../types'
 import { syncCodex } from './codex'
-import { announceReport, answerCompanionEgg, autoLamp, openPane, withBossShare } from './actions'
+import { announceReport, announceUnlockAll, answerCompanionEgg, autoLamp, openPane, withBossShare } from './actions'
 import { stopBgm, syncBgm } from './audio'
 import { detectWindows } from './winsound'
 import { runCheat, runDebugLog, runExport, runImport, runSound, runSummary } from './commands'
@@ -14,7 +14,7 @@ import { buildLabel, cheatsAllowed } from './build'
 import { clock, flushLog, note, setLogSession } from './debuglog'
 import { advanceShared, advanceSettled, canLead, isBusyAt, leaseFor, markBusy, pruneBusy } from './lease'
 import { isPaneShown } from './audio'
-import { BOSS_STAGE, stageGroup } from './world'
+import { BOSS_STAGE, CHAPTER_COUNT, stageGroup } from './world'
 import { applyToolSuccess, applyTurn, dayKey } from './fuel'
 import type { PlayDay } from './calendar'
 import { count as countUp } from './missions'
@@ -325,14 +325,18 @@ export const register: Register = on => {
         if (e.reason === 'answer') {
           // 今日はじめての回答なら、遊んだ日 +1・ログインスタンプ・施設の解放（docs/DAILY.md）
           let played: PlayDay | undefined
+          let before: SaveData | undefined
           const save = await mutate($, (current, now, day) => {
+            before = current
             const answered = answerCompanionEgg(countUp(applyTurn(current, day, tokens).save, 'answers', 1, day), now, day)
             played = recordPlay(answered, day)
             return waterAll(played.save, now)
           })
+          // リーダーでないセッションでも、孵化前の精算で勝利を保存することがある。
+          if (before !== undefined && save !== undefined) announceUnlockAll($, before, save)
           const unlocked = played?.unlocked
           // お知らせは、遊べる施設が開いた日に 1 回だけ（設定でオフにできる）
-          if (save !== undefined && unlocked !== undefined && READY.has(unlocked) && save.settings.notifyUnlock) {
+          if (save !== undefined && unlocked !== undefined && READY.has(unlocked) && save.settings.notifyUnlock && !save.beatenBosses.includes(CHAPTER_COUNT)) {
             $.ui.toast(T.unlockToast(featureDay(unlocked), T.featureName[unlocked] ?? unlocked))
           }
         }

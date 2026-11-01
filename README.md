@@ -13,7 +13,7 @@ Claude に答えてもらうと装備が出る「宝箱」がたまり、時間�
 - 雑魚は各章 30 種・全 300 種。1 ステージに 10〜30 匹が 3 匹ずつ襲ってくる
 - 装備 6 枠 × レア度 6 段階。強ければ自動で装備、弱ければ売却
 - Lv20 で 3 系統に転職: バックエンド騎士（防御）／フロントエンド魔導士（範囲攻撃）／インフラ狙撃手（会心）。さらに 3 段階の進化
-- 遊んだ日ごとに新しい施設が開く 14 日間の冒険: 商店・鉱山・農場・日課・ペット・遠征・鍛冶屋・超能力・金山・図鑑…そして真のラスボス
+- 遊んだ日ごとに新しい施設が開く 14 日間の冒険: 商店・鉱山・農場・日課・ペット・遠征・鍛冶屋・超能力・金山・図鑑…そして真のラスボス（10 章のボスを倒すと残りの施設がすべて開きます）
 - 閉じていた間の分も、最大 8 時間ぶんまとめて受け取り
 - 日本語 / English
 
@@ -90,7 +90,7 @@ Every answer from Claude gives you a treasure chest that drops gear, and as time
 - 30 kinds of monsters per chapter, 300 in all. Each stage sends 10–30 of them at you, three at a time
 - 6 gear slots × 6 rarities. Stronger gear is equipped automatically, weaker gear is sold
 - Change class at Lv20: Backend Knight (defense) / Frontend Mage (area attacks) / Infra Sniper (critical hits), then rank up three times
-- A 14-day adventure that opens a new place each day you play: Shop, Mine, Farm, Quests, Pets, Expeditions, Blacksmith, Psychic Powers, Gold Mines, Codex… and a true final boss
+- A 14-day adventure that opens a new place each day you play: Shop, Mine, Farm, Quests, Pets, Expeditions, Blacksmith, Psychic Powers, Gold Mines, Codex… and a true final boss (beat the Chapter 10 boss to open every remaining place at once)
 - Collect up to 8 hours of progress from while you were away
 - 日本語 / English
 

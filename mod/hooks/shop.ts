@@ -156,7 +156,7 @@ export function discountRate(save: SaveData): number {
   const level = affinityLevel(save)
   const affinity = level >= 9 ? 0.06 : level >= 6 ? 0.04 : level >= 3 ? 0.02 : 0
   const opened = featureDay('shop')
-  const isVeteranTime = save.calendar.isVeteran && save.calendar.playedDays < opened + VETERAN.days
+  const isVeteranTime = save.calendar.isVeteran && save.calendar.playedDays >= opened && save.calendar.playedDays < opened + VETERAN.days
 
   return (1 - affinity) * (isVeteranTime ? 1 - VETERAN.discount : 1) * (hasPsychicNode(save, 'fortune-6') ? 0.95 : 1)
 }

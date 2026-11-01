@@ -351,6 +351,8 @@ export const JA = {
   calNotYet: 'まだ 0 日目（Claude に 1 回答えてもらうと 1 日目）',
   calNext: (days: number, name: string) => (days <= 1 ? `次に遊んだ日に開く: ${name}` : `次の解放: あと ${days} 日遊ぶと ${name}`),
   calAllOpen: 'すべての施設が開きました',
+  calChapterClear: '10 章クリアで全部開きました',
+  unlockAllToast: '🌟 10 章クリア！ 残りの施設がすべて開きました',
   calDay: (day: number) => `${day}日目`,
   calLocked: '？？？',
   calInDays: (days: number) => `あと ${days} 日`,

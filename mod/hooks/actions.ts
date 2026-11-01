@@ -3,7 +3,7 @@ import type { Effect } from './audio'
 import { dropEffect, playEffect, syncBgm } from './audio'
 import { heroTitle, itemName, rarityName } from './art'
 import { challengeBoss, changeJob, evolve } from './battle'
-import { markSeen, priceUnit } from './calendar'
+import { ROADMAP_DAYS, markSeen, priceUnit } from './calendar'
 import { claimCodex, recordDish, syncCodex } from './codex'
 import { challengeTrueBoss, offerSoul, runTrial, startHardLoop } from './seal'
 import type { TrialResult, TrueBossRun } from './seal'
@@ -33,7 +33,7 @@ import { background, load, mutate } from './persist'
 import type { BlackMarketItemId } from './premium'
 import { buyBlackMarket, buyPremium, exchangeSilver, finishBlackMarketIntro, visitBlackMarket } from './premium'
 import { T } from './texts'
-import { BOSS_STAGE, chapterOf } from './world'
+import { BOSS_STAGE, CHAPTER_COUNT, chapterOf } from './world'
 
 // ボタンやタイマーから呼ぶゲームの操作。
 
@@ -183,13 +183,21 @@ export function summaryLines(save: SaveData, day: string, expNeed: number, stage
   ]
 }
 
+/** 保存前後の撃破記録から、10 章の初勝利による全解放だけを知らせる。 */
+export function announceUnlockAll($: $, before: SaveData, after: SaveData): void {
+  if (after.settings.notifyUnlock && before.calendar.playedDays < ROADMAP_DAYS && !before.beatenBosses.includes(CHAPTER_COUNT) && after.beatenBosses.includes(CHAPTER_COUNT)) {
+    $.ui.toast(T.unlockAllToast)
+  }
+}
+
 /**
- * 時間で進んだ結果を知らせる。画面の外（トースト）はボス撃破だけ（設定でオフにできる）。
+ * 時間で進んだ結果を知らせる。画面の外（トースト）はボス撃破と全解放だけ（設定でオフにできる）。
  * 効果音はサイド画面を開いているときだけ: ボス撃破・ボスに負け・ボス登場・レベルアップ。
  */
 export function announceReport($: $, report: BattleReport, before: SaveData, after: SaveData): void {
   const settings = after.settings
   logPsychicProcs(before, after)
+  if (report.bossWins.includes(CHAPTER_COUNT)) announceUnlockAll($, before, after)
   for (const chapter of report.bossWins) {
     if (settings.notifyBoss) {
       $.ui.toast(T.bossWinToast(T.enemy[chapterOf(chapter).boss] ?? ''))
@@ -276,7 +284,9 @@ export async function wearTitle($: $, id: string | null): Promise<void> {
 /** 変えられなかった（お金が足りない・上限など）ときは false */
 async function tryChange($: $, change: (save: SaveData, now: number, day: string) => SaveData | undefined): Promise<boolean> {
   let isDone = false
-  await mutate($, (save, now, day) => {
+  let before: SaveData | undefined
+  const saved = await mutate($, (save, now, day) => {
+    before = save
     const next = change(save, now, day)
     isDone = next !== undefined
     // 図鑑: 手に入れた装備・鉱石・金色の作物・料理の印をつける
@@ -294,6 +304,8 @@ async function tryChange($: $, change: (save: SaveData, now: number, day: string
     const maxPlus = Math.max(save.missions.counts.maxPlus ?? 0, ...[...Object.values(save.equipment), ...save.stash, save.pending, ...Object.values(marked.equipment), ...marked.stash, marked.pending].map(item => item?.plus ?? 0))
     return syncCodex({ ...marked, missions: { ...marked.missions, counts: { ...marked.missions.counts, maxPlus } } })
   })
+  // 精算で初勝利が保存されたときだけ知らせる。変更の再適用の中では通知しない。
+  if (before !== undefined && saved !== undefined) announceUnlockAll($, before, saved)
 
   return isDone
 }

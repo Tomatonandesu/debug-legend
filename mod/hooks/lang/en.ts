@@ -349,6 +349,8 @@ export const EN: typeof JA = {
   calNotYet: 'Day 0 (Day 1 starts with your first Claude answer)',
   calNext: (days: number, name: string) => (days <= 1 ? `Unlocks the next day you play: ${name}` : `Next unlock: ${name} after ${days} more days played`),
   calAllOpen: 'Everything is unlocked',
+  calChapterClear: 'Chapter 10 cleared: all facilities are now open',
+  unlockAllToast: '🌟 Chapter 10 cleared! All remaining facilities are now open',
   calDay: (day: number) => `Day ${day}`,
   calLocked: '???',
   calInDays: (days: number) => (days <= 1 ? 'Next day' : `In ${days} days`),

@@ -239,7 +239,7 @@ async function shopView($: $, els: Els, save: SaveData): Promise<RenderElement> 
   const nextRank = RANK_SPENT[rank]
   const unit = priceUnit(save)
   const refreshCost = refreshPrice(save, day)
-  const veteranLeft = save.calendar.isVeteran ? featureDay('shop') + VETERAN.days - save.calendar.playedDays : 0
+  const veteranLeft = save.calendar.isVeteran && save.calendar.playedDays >= featureDay('shop') ? featureDay('shop') + VETERAN.days - save.calendar.playedDays : 0
   const affinityPercent = level >= 9 ? 6 : level >= 6 ? 4 : level >= 3 ? 2 : 0
   const week = weekKey(day)
   const toUse = usable(save)

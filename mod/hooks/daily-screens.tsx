@@ -32,6 +32,7 @@ import { isBlackMarketOpen } from './premium'
 import { claimable, isCodexOpen } from './codex'
 import { codexView } from './codex-screen'
 import { sealView } from './seal-screen'
+import { CHAPTER_COUNT } from './world'
 
 // 毎日の冒険（docs/DAILY.md）のサイド画面: 冒険の暦タブと、施設の説明（チュートリアル）の吹き出し。
 
@@ -235,6 +236,7 @@ export async function calendarTab($: $, els: Els, save: SaveData, view: { Svg?: 
     <Box flexDirection="column" gap={1}>
       {sections}
       {intro}
+      {calendar.playedDays < ROADMAP_DAYS && save.beatenBosses.includes(CHAPTER_COUNT) ? <Text>{T.calChapterClear}</Text> : null}
       <Box flexDirection="column">
         <Text bold>
           {T.calTitle}　{calendar.playedDays > 0 ? T.calPlayed(calendar.playedDays) : T.calNotYet}
