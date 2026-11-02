@@ -91,7 +91,14 @@ export type HeroStats = {
   bossTimeBonus: number
 }
 
-export function heroStats(save: SaveData, pet = petBattleEffects(save)): HeroStats {
+export type BossTarget = { kind: 'chapter'; chapter: number } | { kind: 'origin' }
+
+export function bossMemoryPercent(save: SaveData, target: BossTarget = { kind: 'chapter', chapter: save.stage.chapter }): number {
+  const count = target.kind === 'origin' ? Math.min(5, Math.max(0, save.seal.trueBoss.memory)) : psychicBossMemory(save, target.chapter)
+  return hasPsychicNode(save, 'future-9') ? count * 5 : 0
+}
+
+export function heroStats(save: SaveData, pet = petBattleEffects(save), target?: BossTarget): HeroStats {
   const job = JOBS[save.job]
   const power = combatPower(save)
   const iron = setCount(save, 'iron-guardian')
@@ -111,7 +118,7 @@ export function heroStats(save: SaveData, pet = petBattleEffects(save)): HeroSta
   const bossAttackRate = hasBossGear(save, 'daemon-helm') ? 1.125 : 1
   const meteor = hasPsychicNode(save, 'mind-5') ? hit * attackSpeed * doubleStrike * (4 / psychicInterval(save, 45)) : 0
   const bossDamageRate =
-    1 + pet.bossRate + (hasPsychicNode(save, 'mind-8') ? 0.08 : 0) + (hasPsychicNode(save, 'future-9') ? psychicBossMemory(save, save.stage.chapter) * 0.05 : 0)
+    1 + pet.bossRate + (hasPsychicNode(save, 'mind-8') ? 0.08 : 0) + (bossMemoryPercent(save, target) / 5) * 0.05
   const mobDps = hit * attackSpeed * doubleStrike + meteor
   // セット 6 個の生存効果は平均 HP、盾・鎖・外套は受けるダメージの近似値として反映する。
   const hpRate = 1 + buffRate(save, 'bossHp') + buffRate(save, 'heal') + pet.hpRate + (iron >= 2 ? 0.1 : 0) + (iron >= 6 ? 0.2 : 0) + (hasPsychicNode(save, 'future-1') ? 0.05 : 0)
@@ -158,6 +165,20 @@ function killRateWithHero(save: SaveData, hero: HeroStats, killSpeed: number, mi
 
 export type BossOutcome = { isWin: boolean; killTime: number; surviveTime: number; duration: number }
 
+/** HP の区間を削る時間と軌跡。怒りの境界を本編・試練・真のラスボスで共用する。 */
+export function bossDamageWindow(save: SaveData, dps: number, hp: number, from: number, to = 0) {
+  const hasRage = hasPsychicNode(save, 'mind-9')
+  const damage = (from - to) * hp
+  const normal = hasRage ? Math.max(0, from * hp - Math.max(0.3, to) * hp) : damage
+  const enraged = damage - normal
+  const rageRate = hasRage ? 1.15 : 1
+  const rageAt = hasRage ? normal / dps : Infinity
+  const seconds = normal / dps + enraged / (dps * rageRate)
+  const fractionAt = (time: number): number => Math.max(to, from - (Math.min(time, rageAt) * dps + Math.max(0, time - rageAt) * dps * rageRate) / hp)
+
+  return { seconds, rageAt, fractionAt }
+}
+
 /** いまの強さでボスと戦ったらどうなるか */
 export function bossOutcome(save: SaveData): BossOutcome {
   return bossOutcomeWithHero(save, heroStats(save))
@@ -176,11 +197,7 @@ function bossOutcomeWithHero(save: SaveData, hero: HeroStats): BossOutcome {
  */
 export function customBossOutcome(save: SaveData, hero: HeroStats, hp: number, attack: number, baseSeconds: number): BossOutcome {
   const openingDamage = hasPsychicNode(save, 'mind-10') ? 0.08 : 0
-  const hpAfterOpening = hp * (1 - openingDamage)
-  const hasRage = hasPsychicNode(save, 'mind-9')
-  const damageBeforeRage = hasRage ? Math.max(0, hpAfterOpening - hp * 0.3) : hpAfterOpening
-  const damageAfterRage = hpAfterOpening - damageBeforeRage
-  const killTime = damageBeforeRage / hero.bossDps + damageAfterRage / (hero.bossDps * (hasRage ? 1.15 : 1))
+  const killTime = bossDamageWindow(save, hero.bossDps, hp, 1 - openingDamage).seconds
   const surviveTime = hero.hp / (attack * hero.damageTaken)
   const leapSeconds = hasPsychicNode(save, 'future-10') ? 10 : 0
   const limit = Math.min(baseSeconds + hero.bossTimeBonus, surviveTime + leapSeconds)
@@ -210,11 +227,11 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
   // ペットの経験値は毎回変わるが、手伝いの倍率が変わるのは形態などが変わったときだけ。
   type Factors = { hero: HeroStats; killSpeed: number; mithrilFast: boolean; hydra: boolean; expMultiplier: number; goldMultiplier: number }
   // 図鑑のごほうび（戦闘力）とハードの周回も、変わったら強さを覚え直す
-  let cached: { level: number; evolution: number; job: SaveData['job']; equipment: SaveData['equipment']; buffs: SaveData['buffs']; psychic: SaveData['psychic']; codexClaimed: string[]; hardLoop: number; petKey: string; validUntil: number; factors: Factors } | undefined
+  let cached: { level: number; evolution: number; job: SaveData['job']; equipment: SaveData['equipment']; buffs: SaveData['buffs']; psychic: SaveData['psychic']; chapter: number; memory: number; codexClaimed: string[]; hardLoop: number; petKey: string; validUntil: number; factors: Factors } | undefined
   const factors = (): Factors => {
     const petKey = save.pets.active.length === 0 ? '' : activePets(save).map(pet => `${pet.id}:${pet.species}:${pet.form}:${pet.affinity}:${pet.collar}`).join('|')
     if (cached !== undefined && cached.level === save.level && cached.evolution === save.evolution && cached.job === save.job &&
-      cached.equipment === save.equipment && cached.buffs === save.buffs && cached.psychic === save.psychic && cached.codexClaimed === save.codex.claimed && cached.hardLoop === save.hard.loop && cached.petKey === petKey && save.battleSeconds < cached.validUntil) {
+      cached.equipment === save.equipment && cached.buffs === save.buffs && cached.psychic === save.psychic && cached.chapter === save.stage.chapter && cached.memory === psychicBossMemory(save, save.stage.chapter) && cached.codexClaimed === save.codex.claimed && cached.hardLoop === save.hard.loop && cached.petKey === petKey && save.battleSeconds < cached.validUntil) {
       return cached.factors
     }
     const pet = petBattleEffects(save)
@@ -228,7 +245,7 @@ export function fight(input: SaveData, seconds: number, now: number): { save: Sa
       goldMultiplier: 1 + buffRate(save, 'gold') + pet.goldRate + goldRate + (hasPsychicNode(save, 'fortune-1') ? 0.05 : 0),
     }
     const validUntil = save.buffs.reduce((until, buff) => buff.until !== undefined && buff.until > save.battleSeconds ? Math.min(until, buff.until) : until, Infinity)
-    cached = { level: save.level, evolution: save.evolution, job: save.job, equipment: save.equipment, buffs: save.buffs, psychic: save.psychic, codexClaimed: save.codex.claimed, hardLoop: save.hard.loop, petKey, validUntil, factors: next }
+    cached = { level: save.level, evolution: save.evolution, job: save.job, equipment: save.equipment, buffs: save.buffs, psychic: save.psychic, chapter: save.stage.chapter, memory: psychicBossMemory(save, save.stage.chapter), codexClaimed: save.codex.claimed, hardLoop: save.hard.loop, petKey, validUntil, factors: next }
     return next
   }
   const gain = (base: number, baseGold: number, isMob = true): void => {
@@ -441,12 +458,7 @@ export function bossHpLeft(save: SaveData): number {
 
 function bossHpFraction(save: SaveData, hero: HeroStats, elapsed: number, hp: number): number {
   const openingDamage = hasPsychicNode(save, 'mind-10') ? 0.08 : 0
-  const hasRage = hasPsychicNode(save, 'mind-9')
-  const untilRage = hasRage ? Math.max(0, (0.7 - openingDamage) * hp / hero.bossDps) : Infinity
-  const beforeRage = Math.min(elapsed, untilRage) * hero.bossDps
-  const afterRage = Math.max(0, elapsed - untilRage) * hero.bossDps * (hasRage ? 1.15 : 1)
-
-  return Math.max(0, 1 - openingDamage - (beforeRage + afterRage) / hp)
+  return bossDamageWindow(save, hero.bossDps, hp, 1 - openingDamage).fractionAt(elapsed)
 }
 
 /** ボスに負けて、その章の 1〜9 面をめぐって稼いでいるところか */

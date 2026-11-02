@@ -450,22 +450,64 @@ export type CodexState = {
 /** 魂の試練 1 章ぶん。best = 最短の勝ち時間（秒、0 = まだ）、readyAt = また挑める時刻（実時間） */
 export type SealTrial = { best: number; readyAt: number }
 
+/** 描画時に再計算しない、戦った時点の姿・HP・出来事（版 29）。名前や表示文は含めない。 */
+export type SealReplaySegment = {
+  phase: 0 | 1 | 2 | 3
+  from: number
+  to: number
+  takenFrom: number
+  takenTo: number
+  bossFrom: number
+  bossTo: number
+  rage: boolean
+  petsHalf: boolean
+}
+export type SealReplayEvent = {
+  at: number
+  kind: 'fray' | 'opening' | 'memory' | 'rage' | 'leap' | 'phase' | 'shadow'
+  chapter?: number
+  damage?: number
+  raw?: number
+  value?: number
+}
+export type SealReplay = {
+  loop: number
+  hero: { job: JobId; evolution: number }
+  pets: { species: PetSpecies; form: PetForm }[]
+  heroHp: number
+  leapHp: number
+  bossHp: number
+  bossStart: number
+  limit: number
+  elapsed: number
+  reason: 'win' | 'down' | 'time'
+  memory: number
+  isNewSoul: boolean
+  segments: SealReplaySegment[]
+  events: SealReplayEvent[]
+}
+export type SealEndingRecord = { loop: number; days: number; kills: number; floor: number; crops: number; pets: string[] }
+export type SealPlaying = { kind: 'origin' | 'trial'; at: number; endsAt: number; skipped: boolean; wasBeaten: boolean }
+export type SealTrialLast = { chapter: number; won: boolean; seconds: number; at: number; replay: SealReplay | null }
+
 /** 真のラスボスとの 1 回の戦い（段階ごとの結果） */
 export type TrueBossPhase = { phase: 1 | 2 | 3; seconds: number; damage: number; heroHpLeft: number; bossHpLeft: number }
-export type TrueBossLast = { won: boolean; loop: number; at: number; seconds: number; phases: TrueBossPhase[]; reason: 'win' | 'down' | 'time' }
+export type TrueBossLast = { won: boolean; loop: number; at: number; seconds: number; phases: TrueBossPhase[]; reason: 'win' | 'down' | 'time'; replay: SealReplay | null; ending: SealEndingRecord | null }
 
 /** 封印の魔法陣（版 20）。offered = 台座に捧げた章 */
 export type SealState = {
   offered: number[]
   trials: Record<number, SealTrial>
   /** 最後の魂の試練 */
-  lastTrial: { chapter: number; won: boolean; seconds: number; at: number } | null
+  lastTrial: SealTrialLast | null
+  playing: SealPlaying | null
   trueBoss: {
     /** 挑んだ回数、勝った周回の数（0 = まだ。ハードで勝つと 2…）、また挑める時刻、封印のほころび（0〜5。1 つで次の戦いの最初に HP -3%） */
     tries: number
     beaten: number
     readyAt: number
     fray: number
+    memory: number
     /** 最短の勝ち時間（秒、0 = まだ）と最後の戦い */
     best: number
     last: TrueBossLast | null
@@ -505,7 +547,7 @@ export type BusyMark = {
 
 /** $.store に保存するセーブデータ（版 19） */
 export type SaveData = {
-  version: 28
+  version: 29
   createdAt: number
   /** 最後に時間の進行を計算した時刻 */
   lastTickAt: number
@@ -682,6 +724,12 @@ declare module 'claude-code' {
       codexRead: string
       /** ハード周回の確認中か */
       hardConfirm: boolean
+      /** 真のラスボス戦を見返し始めた時刻（画面だけ） */
+      originReplay: { at: number; started: number } | null
+      /** 試練・スタッフロールの見返しと、とばした後に枠が出た時刻（画面だけ） */
+      trialReplay: { at: number; started: number } | null
+      endingShown: { at: number; started: number } | null
+      endingReplay: { at: number; started: number } | null
     }
   }
 }

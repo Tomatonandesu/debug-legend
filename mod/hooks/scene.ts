@@ -24,7 +24,7 @@ const CHAPTER_COLORS: readonly [string, string, string, string][] = [
 
 const colorsFor = (chapter: number) => CHAPTER_COLORS[(chapter - 1) % CHAPTER_COLORS.length] ?? CHAPTER_COLORS[0]!
 
-const OUTLINE = 'font-family="monospace" font-weight="bold" stroke="#1b1b28" stroke-width="3" paint-order="stroke" text-anchor="middle"'
+export const OUTLINE = 'font-family="monospace" font-weight="bold" stroke="#1b1b28" stroke-width="3" paint-order="stroke" text-anchor="middle"'
 
 // SVG の中の id は、絵や章ごとに違う名前にする（表示先によっては同じページに複数の Svg が並ぶため）
 
@@ -212,7 +212,8 @@ function evolveFlash(cx: number, cy: number, size: number, color: string): strin
 }
 
 /** SVG の文字に入れる名前（< や & をそのまま入れない） */
-const escapeXml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+export const escapeXml = (text: string): string => text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/gu, '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 export const HP_COLORS = { hero: '#4cc38a', foe: '#ff6b6b', boss: '#ff4d6d' }
 

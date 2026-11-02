@@ -1,10 +1,10 @@
-import type { TrueBossLast, TrueBossPhase } from '../types'
+import type { SealEndingRecord, SealPlaying, SealReplay, SealReplayEvent, SealReplaySegment, SealTrialLast, TrueBossLast, TrueBossPhase } from '../types'
 import type { Adventurer, Animal, AwayReport, Buff, BusyMark, Calendar, CodexState, Drop, ExpeditionLunch, ExpeditionTrip, FarmLast, FarmPlot, FarmState, FeatureId, GoldMineState, Item, JobId, MineBossFight, MineCell, MineFloorRecord, MineHaul, MineState, Mission, Missions, Pet, PetEgg, PetForm, PetSpecies, PetsState, PsychicProc, PsychicState, SaveData, SealState, Settings, ShareMoment, ShopState, SlotId, TimeLease } from '../types'
 import { BUFF_KINDS, BUFF_MAX_CHARGES, SAVE_BUFF_LIMIT } from './buffs'
 import { heroStats } from './battle'
 import { GOODS, emptyShop } from './shop'
 import { DISH_IDS, MOB_IDS, ORE_IDS, backfillCodex, emptyCodex } from './codex'
-import { FRAY_MAX, emptySeal } from './seal'
+import { FRAY_MAX, emptySeal, replayDurationMs } from './seal'
 import { BAG_CAP, FEATURES, READY, emptyCalendar } from './calendar'
 import { ANIMALS, CROP_IDS, DECOR, EXPANSIONS, FARM_PLOTS, GREENHOUSE_PLOTS, QUALITIES, SIGN_NAMES, cropOf, emptyFarm, recipeOf } from './farm'
 import { CART_BOOST_MS, MAX_LINES, MAX_UPGRADE, WORK_SPAN_LIMIT, emptyGoldMine } from './goldmine'
@@ -23,7 +23,7 @@ import { ADVANCED_JOBS, BOSS_STAGE, CHAPTER_COUNT, JOB_IDS, MAX_GROUP } from './
 // 形を変えるときは SAVE_VERSION を上げ、MIGRATIONS に「前の版 → 次の版」の変換を足す。
 
 export const SAVE_KEY = 'save'
-export const SAVE_VERSION = 28
+export const SAVE_VERSION = 29
 export const EXPORT_TAG = 'debug-legend-save'
 /** 書いた変更の印をいくつまで残すか */
 export const APPLIED_LIMIT = 64
@@ -283,6 +283,15 @@ const MIGRATIONS: Record<number, (old: Raw, now: number) => Raw> = {
       manualFrom: autoJudge === false ? 0 : manualRareUp === true ? 2 : -1,
       stashFrom: keepForSmith === true ? 2 : -1 } }
   },
+  // 版 29: 古い戦いは再生しない。専用の記憶は封印のほころびだけから引き継ぐ。
+  28: old => {
+    const seal = isObject(old.seal) ? old.seal : {}
+    const boss = isObject(seal.trueBoss) ? seal.trueBoss : {}
+    return { ...old, version: 29, seal: { ...seal, playing: null,
+      lastTrial: isObject(seal.lastTrial) ? { ...seal.lastTrial, replay: null } : null,
+      trueBoss: { ...boss, memory: int(boss.fray, 0, 0, FRAY_MAX),
+        last: isObject(boss.last) ? { ...boss.last, replay: null, ending: null } : null } } }
+  },
 }
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === 'boolean' ? value : fallback)
@@ -426,7 +435,7 @@ function normalize(raw: Raw, now: number): SaveData {
     goldMine: goldMine(raw.goldMine),
     codex: codex(raw.codex),
     souls: chapterSet(raw.souls),
-    seal: seal(raw.seal),
+    seal: seal(raw.seal, now),
     hard: { loop: isObject(raw.hard) ? int(raw.hard.loop, 0, 0, 99) : 0 },
   }
   // 遠征だけが参照する架空 ID・二重同行を外す。所持ペットと戦闘枠は動かさない。
@@ -483,7 +492,7 @@ function codex(value: unknown): CodexState {
 }
 
 /** 封印の魔法陣: 捧げた章は 1〜10 で重なりなし、時刻は 0 以上、ほころびは 0〜5 */
-function seal(value: unknown): SealState {
+function seal(value: unknown, now: number): SealState {
   const raw = isObject(value) ? value : {}
   const base = emptySeal()
   const trials: Record<number, { best: number; readyAt: number }> = {}
@@ -495,9 +504,10 @@ function seal(value: unknown): SealState {
       }
     }
   }
-  const lastTrial = isObject(raw.lastTrial) && Number.isInteger(raw.lastTrial.chapter) && (raw.lastTrial.chapter as number) >= 1 && (raw.lastTrial.chapter as number) <= CHAPTER_COUNT
-    ? { chapter: raw.lastTrial.chapter as number, won: flag(raw.lastTrial.won, false), seconds: num(raw.lastTrial.seconds, 0, 0, 1e6), at: int(raw.lastTrial.at, 0, 0, 1e15) }
+  const lastTrial: SealTrialLast | null = isObject(raw.lastTrial) && Number.isInteger(raw.lastTrial.chapter) && (raw.lastTrial.chapter as number) >= 1 && (raw.lastTrial.chapter as number) <= CHAPTER_COUNT
+    ? { chapter: raw.lastTrial.chapter as number, won: flag(raw.lastTrial.won, false), seconds: num(raw.lastTrial.seconds, 0, 0, 1e6), at: int(raw.lastTrial.at, 0, 0, 1e15), replay: null }
     : null
+  if (lastTrial !== null && isObject(raw.lastTrial)) lastTrial.replay = sealReplay(raw.lastTrial.replay, 'trial', lastTrial.seconds, lastTrial.won)
   const boss = isObject(raw.trueBoss) ? raw.trueBoss : {}
   const phases = (v: unknown): TrueBossPhase[] =>
     Array.isArray(v)
@@ -515,22 +525,118 @@ function seal(value: unknown): SealState {
         seconds: num(boss.last.seconds, 0, 0, 1e6),
         phases: phases(boss.last.phases),
         reason: boss.last.reason === 'win' || boss.last.reason === 'down' || boss.last.reason === 'time' ? boss.last.reason : 'time',
+        replay: null,
+        ending: boss.last.won === true ? sealEnding(boss.last.ending) : null,
       }
     : null
+  if (last !== null && isObject(boss.last)) {
+    const replay = sealReplay(boss.last.replay, 'origin', last.seconds, last.won, last.phases, last.loop)
+    last.replay = replay !== null && replay.reason === last.reason ? replay : null
+  }
+  let playing: SealPlaying | null = null
+  if (isObject(raw.playing) && (raw.playing.kind === 'origin' || raw.playing.kind === 'trial')) {
+    const record = raw.playing.kind === 'origin' ? last : lastTrial
+    if (record?.replay !== null && record?.replay !== undefined && raw.playing.at === record.at) {
+      const maximum = record.at + replayDurationMs(raw.playing.kind, record.replay)
+      // 時計が戦った時刻より前なら再生を終える。読み込みのたびに期限を延ばさない。
+      const endsAt = Math.min(num(raw.playing.endsAt, maximum, record.at, maximum), now < record.at ? now : maximum)
+      playing = { kind: raw.playing.kind, at: record.at, endsAt, skipped: flag(raw.playing.skipped, false), wasBeaten: flag(raw.playing.wasBeaten, false) }
+    }
+  }
 
   return {
     offered: chapterSet(raw.offered),
     trials,
     lastTrial,
+    playing,
     trueBoss: {
       tries: int(boss.tries, base.trueBoss.tries, 0, 1e9),
       beaten: int(boss.beaten, 0, 0, 99),
       readyAt: int(boss.readyAt, 0, 0, 1e15),
       fray: int(boss.fray, 0, 0, FRAY_MAX),
+      memory: int(boss.memory, 0, 0, 5),
       best: num(boss.best, 0, 0, 1e6),
       last,
     },
   }
+}
+
+function sealEnding(value: unknown): SealEndingRecord | null {
+  if (!isObject(value)) return null
+  return { loop: int(value.loop, 0, 0, 99), days: int(value.days, 0, 0, 1e6), kills: int(value.kills, 0, 0, 1e12),
+    floor: int(value.floor, 0, 0, 100_000), crops: int(value.crops, 0, 0, CROP_IDS.length),
+    pets: Array.isArray(value.pets) ? value.pets.filter((name): name is string => typeof name === 'string').slice(0, PET_SPECIES.length)
+      .map(name => name.slice(0, 24).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff\ud800-\udfff]/gu, '')) : [] }
+}
+
+/** 再生の数値を補正すると計算と違う絵になるので、不正なら記録全体だけを捨てる。 */
+function sealReplay(value: unknown, kind: 'origin' | 'trial', seconds: number, won: boolean, phases?: TrueBossPhase[], loop = 0): SealReplay | null {
+  const valid = (n: unknown, min = 0, max = 1e30): n is number => typeof n === 'number' && Number.isFinite(n) && n >= min && n <= max
+  const close = (a: number, b: number) => Math.abs(a - b) <= 1e-8 * Math.max(1, Math.abs(a), Math.abs(b))
+  if (!isObject(value) || (value.loop !== undefined && (!valid(value.loop, 0, 99) || !Number.isInteger(value.loop))) ||
+    !isObject(value.hero) || !JOB_IDS.includes(value.hero.job as JobId) ||
+    !valid(value.hero.evolution, 0, EVOLUTION.levels.length) || !Number.isInteger(value.hero.evolution) ||
+    !Array.isArray(value.pets) || value.pets.length > 2 ||
+    !valid(value.heroHp, Number.MIN_VALUE) || !valid(value.leapHp) || !valid(value.bossHp, Number.MIN_VALUE) || !valid(value.bossStart, Number.MIN_VALUE, 1) ||
+    !valid(value.limit, Number.MIN_VALUE, 1e6) || !valid(value.elapsed, 0, value.limit) || !close(value.elapsed, seconds) ||
+    !['win', 'down', 'time'].includes(value.reason as string) || (value.reason === 'win') !== won ||
+    !valid(value.memory, 0, 25) || value.memory % 5 !== 0 || typeof value.isNewSoul !== 'boolean' || (kind === 'origin' && value.isNewSoul) ||
+    !Array.isArray(value.segments) || value.segments.length === 0 || value.segments.length > 16 || !Array.isArray(value.events) || value.events.length > 24) return null
+  const pets: SealReplay['pets'] = []
+  for (const pet of value.pets) {
+    if (!isObject(pet) || !PET_SPECIES.includes(pet.species as PetSpecies) || (pet.form !== 1 && pet.form !== 2 && pet.form !== 3)) return null
+    pets.push({ species: pet.species as PetSpecies, form: pet.form })
+  }
+  const pool = value.heroHp + value.leapHp
+  const segments: SealReplaySegment[] = []
+  for (const s of value.segments) {
+    const prev = segments[segments.length - 1]
+    if (!isObject(s) || (kind === 'trial' ? s.phase !== 0 : s.phase !== 1 && s.phase !== 2 && s.phase !== 3) ||
+      !valid(s.from, 0, value.elapsed) || !valid(s.to, s.from, value.elapsed) || !valid(s.takenFrom, 0, pool) || !valid(s.takenTo, s.takenFrom, pool) ||
+      !valid(s.bossFrom, 0, value.bossStart) || !valid(s.bossTo, 0, s.bossFrom) || typeof s.rage !== 'boolean' || typeof s.petsHalf !== 'boolean' ||
+      s.petsHalf !== (s.phase === 1) || (s.rage && s.bossFrom > 0.3 + 1e-8) ||
+      !close(s.from, prev?.to ?? 0) || !close(s.takenFrom, prev?.takenTo ?? 0) ||
+      (prev !== undefined && (!close(s.bossFrom, prev.bossTo) || (s.phase as number) < prev.phase))) return null
+    segments.push({ phase: s.phase as SealReplaySegment['phase'], from: s.from, to: s.to, takenFrom: s.takenFrom, takenTo: s.takenTo,
+      bossFrom: s.bossFrom, bossTo: s.bossTo, rage: s.rage, petsHalf: s.petsHalf })
+  }
+  const end = segments[segments.length - 1]!
+  if (!close(end.to, value.elapsed) || (won && !close(end.bossTo, 0)) || (value.reason === 'down' && !close(end.takenTo, pool)) ||
+    (value.reason === 'time' && !close(value.elapsed, value.limit))) return null
+  if (phases !== undefined) {
+    if (!close(phases.reduce((sum, phase) => sum + phase.damage, 0), end.takenTo) || !close(phases[phases.length - 1]?.bossHpLeft ?? -1, end.bossTo)) return null
+    for (const phase of phases) {
+      const group = segments.filter(segment => segment.phase === phase.phase)
+      if (!close(group.reduce((sum, segment) => sum + segment.to - segment.from, 0), phase.seconds) ||
+        !close(group.reduce((sum, segment) => sum + segment.takenTo - segment.takenFrom, 0), phase.damage)) return null
+    }
+  }
+  const events: SealReplayEvent[] = []
+  let lastShadow = 0
+  for (const e of value.events) {
+    if (!isObject(e) || !valid(e.at, events[events.length - 1]?.at ?? 0, value.elapsed) ||
+      !['fray', 'opening', 'memory', 'rage', 'leap', 'phase', 'shadow'].includes(e.kind as string) ||
+      (e.value !== undefined && !valid(e.value, 0, 100)) || (e.raw !== undefined && !valid(e.raw)) || (e.damage !== undefined && !valid(e.damage, 0, pool)) ||
+      (e.chapter !== undefined && (!valid(e.chapter, 1, CHAPTER_COUNT) || !Number.isInteger(e.chapter)))) return null
+    const event: SealReplayEvent = { at: e.at, kind: e.kind as SealReplayEvent['kind'] }
+    if (e.kind === 'shadow') {
+      if (kind !== 'origin' || !valid(e.chapter, lastShadow + 1, CHAPTER_COUNT) || !valid(e.raw) || !valid(e.damage, 0, e.raw)) return null
+      lastShadow = e.chapter
+    } else if (e.chapter !== undefined || e.raw !== undefined || e.damage !== undefined) return null
+    if (e.kind === 'phase' && (kind !== 'origin' || e.value !== 1 && e.value !== 2 && e.value !== 3)) return null
+    if (e.kind === 'leap' && (value.leapHp === 0 || end.takenTo <= value.heroHp)) return null
+    if (['fray', 'opening', 'memory'].includes(event.kind) && (e.at !== 0 || !valid(e.value, Number.MIN_VALUE, 100))) return null
+    if (e.kind === 'fray' && kind !== 'origin') return null
+    if (e.kind === 'memory' && e.value !== value.memory) return null
+    if (e.value !== undefined) event.value = e.value as number
+    if (e.chapter !== undefined) event.chapter = e.chapter as number
+    if (e.raw !== undefined) event.raw = e.raw as number
+    if (e.damage !== undefined) event.damage = e.damage as number
+    events.push(event)
+  }
+  return { loop: value.loop === undefined ? loop : value.loop as number, hero: { job: value.hero.job as JobId, evolution: value.hero.evolution }, pets, heroHp: value.heroHp, leapHp: value.leapHp,
+    bossHp: value.bossHp, bossStart: value.bossStart, limit: value.limit, elapsed: value.elapsed, reason: value.reason as SealReplay['reason'],
+    memory: value.memory, isNewSoul: value.isNewSoul, segments, events }
 }
 
 /** 金山・銀山: 線路は 1〜4 本、強化は 0〜10 段、時刻は 0 以上、作業中の合計は 0 以上 */

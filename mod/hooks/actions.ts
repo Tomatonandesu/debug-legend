@@ -5,7 +5,7 @@ import { heroTitle, itemName, rarityName } from './art'
 import { challengeBoss, changeJob, evolve } from './battle'
 import { ROADMAP_DAYS, markSeen, priceUnit } from './calendar'
 import { claimCodex, recordDish, syncCodex } from './codex'
-import { challengeTrueBoss, offerSoul, runTrial, startHardLoop } from './seal'
+import { challengeTrueBoss, offerSoul, runTrial, skipSealReplay as skipSealReplayPure, startHardLoop } from './seal'
 import type { TrialResult, TrueBossRun } from './seal'
 import { addBuff } from './buffs'
 import { hasPsychicNode, learnPsychic as learnPsychicPure, recordPsychicProc, resetPsychic as resetPsychicPure } from './psychic'
@@ -205,7 +205,9 @@ export function announceReport($: $, report: BattleReport, before: SaveData, aft
   }
   // 本編のボスを初めて倒して魂を手に入れた（14 日目以降）
   for (const chapter of after.souls) {
-    if (!before.souls.includes(chapter) && settings.notifyBoss) {
+    // 競合の入れ直しで試練の魂が混ざった場合も、本編の勝ちとは分ける。
+    const fromTrial = after.seal.lastTrial?.chapter === chapter && after.seal.lastTrial.replay?.isNewSoul === true
+    if (!before.souls.includes(chapter) && report.bossWins.includes(chapter) && !fromTrial && settings.notifyBoss) {
       $.ui.toast(T.soulToast(chapter, T.enemy[chapterOf(chapter).boss] ?? ''))
     }
   }
@@ -1042,8 +1044,8 @@ export async function challengeSoulTrial($: $, chapter: number): Promise<TrialRe
   })
   const save = await load($)
   if (result !== undefined && save !== undefined) {
-    background(playEffect($, result.outcome.isWin ? 'victory' : 'hit', save.settings))
-    $.ui.toast(result.outcome.isWin ? T.trialWinToast(chapter, result.outcome.killTime) : T.trialLoseToast(chapter))
+    background(playEffect($, 'boss-appear', save.settings))
+    $.ui.toast(T.trialChallengeToast(chapter))
   }
 
   return result
@@ -1059,11 +1061,19 @@ export async function challengeOriginMoth($: $): Promise<TrueBossRun | undefined
   })
   const save = await load($)
   if (run !== undefined && save !== undefined) {
-    background(playEffect($, run.result.isWin ? 'victory' : 'hit', save.settings))
-    $.ui.toast(run.result.isWin ? T.trueBossWinToast : T.trueBossLoseToast)
+    background(playEffect($, 'boss-appear', save.settings))
+    $.ui.toast(T.trueBossChallengeToast)
   }
 
   return run
+}
+
+export async function skipSealReplay($: $, target?: { kind: 'origin' | 'trial'; at: number }): Promise<boolean> {
+  // 引数なしの呼び出しでも、競合の入れ直しが別の戦いを飛ばさないよう最初に固定する。
+  const playing = target ?? (await load($))?.seal.playing
+  if (playing == null) return false
+  const battle = { kind: playing.kind, at: playing.at }
+  return tryChange($, save => skipSealReplayPure(save, battle))
 }
 
 /** 「ハードで第 1 章から」 */

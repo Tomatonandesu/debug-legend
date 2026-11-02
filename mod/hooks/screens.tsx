@@ -26,6 +26,7 @@ import { activePets } from './pets'
 import { note } from './debuglog'
 import { psychicTab } from './psychic-screen'
 import { ADVANCED_JOBS, BOSS_STAGE, WAVE, stageGroup, waveSlot, waveView } from './world'
+import { isSealPlaying } from './seal'
 
 // 入力欄の上の帯（簡素）と、サイドの広い画面（派手）。
 // デスクトップ・スマホは Svg の絵、ターミナルは文字だけ。
@@ -369,7 +370,7 @@ function battleTab($: $, e: RenderInput<'Pane'>, save: SaveData, now: number, is
     return (
       <Box flexDirection="column" gap={1}>
         {awayBox($, els, save)}
-        {shareBox($, els, save)}
+        {shareBox($, els, save, now)}
         <Text bold>{stageLine(save)}</Text>
         {bossLine($, els, save)}
         <Text>{T.damageLine(damage, attack)}</Text>
@@ -443,7 +444,7 @@ function battleTab($: $, e: RenderInput<'Pane'>, save: SaveData, now: number, is
   return (
     <Box flexDirection="column" gap={1}>
       {awayBox($, els, save)}
-      {shareBox($, els, save)}
+      {shareBox($, els, save, now)}
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
         <Text bold>{T.stageName(save.stage.chapter, save.stage.stage)}</Text>
         <Text dimColor>{T.chapterName[save.stage.chapter - 1]}</Text>
@@ -667,10 +668,10 @@ async function jobTab($: $, els: Els, save: SaveData, choice: JobId | null, now:
 }
 
 /** 転職・エピック以上のドロップ・ボス撃破のあと: X でポストするリンク（閉じるまで出しておく） */
-function shareBox($: $, els: Els, save: SaveData) {
+function shareBox($: $, els: Els, save: SaveData, now: number) {
   const { Box, Button, Link, Text } = els
   const moment = save.share
-  if (moment === null) {
+  if (moment === null || (moment.kind === 'trueboss' && save.seal.playing?.at === moment.at && isSealPlaying(save, now))) {
     return null
   }
 
